@@ -1,0 +1,10 @@
+[package]
+name = "sherd-platform-linux"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+sherd-platform.workspace = true
+async-trait.workspace = true
