@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html>
+<body>
+
+<button onclick="test()">Test Phantom</button>
+
+<script>
+async function test() {
+    const provider = window.phantom?.solana;
+
+    if (!provider) {
+        alert("Phantom not installed");
+        return;
+    }
+
+    // Connect wallet
+    const response = await provider.connect();
+
+    const walletAddress = response.publicKey.toString();
+
+    // This is the message you want Phantom to sign
+    const message = "hello sherd";
+
+    // Convert message to bytes
+    const encodedMessage = new TextEncoder().encode(message);
+
+    // Ask Phantom to sign it
+    const { signature } = await provider.signMessage(
+        encodedMessage,
+        "utf8"
+    );
+
+    // Convert signature bytes → base58
+    const signatureBase58 = bs58.encode(signature);
+
+    console.log("WALLET:", walletAddress);
+    console.log("MESSAGE:", message);
+    console.log("SIGNATURE:", signatureBase58);
+}
+</script>
+
+<script src="https://cdn.jsdelivr.net/npm/bs58@6.0.0/index.min.js"></script>
+
+</body>
+</html>
