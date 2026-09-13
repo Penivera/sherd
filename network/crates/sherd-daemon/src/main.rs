@@ -6,31 +6,33 @@
 mod connection;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use interprocess::local_socket::{tokio::prelude::*, GenericNamespaced, ListenerOptions};
 #[cfg(windows)]
 use interprocess::os::windows::local_socket::ListenerOptionsExt;
 use sherd_core::{SherdConfig, SherdService};
+use sherd_platform::{CapabilityLevel, LinkState};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
+    init_logging();
 
     let backend = platform_backend();
     let config = SherdConfig::default();
     let device_ssid = config.device_ssid.clone();
+    let watchdog_interval = config.watchdog_interval;
     let service = Arc::new(SherdService::new(backend, config));
 
     tracing::info!(%device_ssid, "starting sherd daemon");
 
-    // Best-effort: try to get connected (join or host) right away, without
-    // blocking the IPC server from coming up.
+    // Best-effort: get connected (join or host) right away, then keep
+    // watching the link for as long as the daemon runs so a dropped
+    // connection gets retried automatically instead of leaving the device
+    // stranded until someone notices. See `supervise` below.
     {
         let service = Arc::clone(&service);
-        tokio::spawn(async move {
-            let outcome = service.auto_connect().await;
-            tracing::info!(?outcome, "startup auto-connect finished");
-        });
+        tokio::spawn(supervise(service, watchdog_interval));
     }
 
     let name = sherd_protocol::SOCKET_NAME.to_ns_name::<GenericNamespaced>()?;
@@ -61,6 +63,73 @@ async fn main() -> anyhow::Result<()> {
         };
         let service = Arc::clone(&service);
         tokio::spawn(connection::handle(service, conn));
+    }
+}
+
+/// `tracing_subscriber::fmt::init()` with no `RUST_LOG` set only prints
+/// `ERROR`-level events -- which this daemon almost never emits, since
+/// failures (no capable adapter, no internet connection to tether from,
+/// `netsh`/WinRT errors) are reported as `warn`/`info` or handed back as an
+/// `AutoOutcome::Unavailable { reason }`. Launched by double-click (as
+/// opposed to a terminal where someone thought to set `RUST_LOG=debug`),
+/// that meant the console window came up and just sat there blank with no
+/// way to tell *why* hosting or joining failed. Default to `info` instead so
+/// startup, auto-connect outcomes, and every reconnect attempt are visible
+/// out of the box; `RUST_LOG` still overrides this for more/less detail
+/// (e.g. `RUST_LOG=debug` to also see the composite backend's WinRT-vs-netsh
+/// fallback decisions).
+fn init_logging() {
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    tracing_subscriber::fmt().with_env_filter(filter).init();
+}
+
+/// Keeps this device's contribution to the sherd mesh up for as long as the
+/// daemon runs: an initial connect, then a standing health check that
+/// re-runs `auto_connect` whenever what *must* be up isn't.
+///
+/// What counts as "must be up" depends on what this device is capable of,
+/// because hosting is never optional on a capable device (see
+/// `SherdService::auto_connect` -- every hosting node is what keeps the
+/// mesh's range from shrinking to whichever one device happened to be
+/// reachable): on a [`CapabilityLevel::FullMeshCapable`] adapter, only the
+/// hotspot being `Up` counts as healthy, so if it drops for any reason
+/// (someone turned Wi-Fi off, Windows tore it down, the uplink it was
+/// tethering from went away) the very next tick restarts it -- the uplink
+/// station link is a bonus and its being down doesn't by itself trigger
+/// anything. On a station-only adapter there's no hotspot to keep up, so the
+/// station link is what must stay `Up`; if the network this device joined
+/// drops, the next tick re-scans and joins another sherd network if one is
+/// visible. Either way a healthy device is left alone -- this never
+/// interrupts a good connection or restarts a good hotspot just because
+/// another sherd network came into range.
+async fn supervise(service: Arc<SherdService>, interval: Duration) {
+    let outcome = service.auto_connect().await;
+    tracing::info!(?outcome, "startup auto-connect finished");
+
+    let mut ticker = tokio::time::interval(interval);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    ticker.tick().await; // consume the immediate first tick; we just connected above
+
+    loop {
+        ticker.tick().await;
+
+        let status = service.status().await;
+        let is_up = |link: &Option<sherd_platform::LinkStatus>| {
+            link.as_ref().is_some_and(|s| s.state == LinkState::Up)
+        };
+        let healthy = if matches!(status.capability.level, CapabilityLevel::FullMeshCapable) {
+            is_up(&status.hotspot)
+        } else {
+            is_up(&status.station)
+        };
+        if healthy {
+            continue;
+        }
+
+        tracing::warn!(?status.capability.level, "sherd link down; reconnecting");
+        let outcome = service.auto_connect().await;
+        tracing::info!(?outcome, "watchdog auto-connect finished");
     }
 }
 

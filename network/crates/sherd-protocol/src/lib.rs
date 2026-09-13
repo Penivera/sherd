@@ -58,14 +58,21 @@ pub enum Response {
     NotYetImplemented { feature: String },
 }
 
-/// What the "join or host" auto-connect flow ended up doing.
+/// What the auto-connect flow ended up doing.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "payload")]
 pub enum AutoOutcome {
-    /// Found an existing sherd network and joined it as a station.
+    /// This device is hosting its own sherd network. Unconditional whenever
+    /// the adapter is capable of it -- not just a fallback for when no
+    /// other network was found -- so the mesh keeps a hotspot at every
+    /// capable node. `uplink` is set when this device *also* joined another
+    /// sherd network as a station at the same time, relaying that
+    /// network's reach through its own hotspot rather than just hosting an
+    /// island of its own.
+    Hosting { ssid: String, uplink: Option<String> },
+    /// This device can't host (station-only adapter); joined an existing
+    /// sherd network instead.
     Joined { ssid: String },
-    /// No sherd network was visible; this device is now hosting its own.
-    Hosting { ssid: String },
     /// Neither worked: nothing to join, and this device can't host
     /// (station-only adapter) or has no usable Wi-Fi at all.
     Unavailable { reason: String },

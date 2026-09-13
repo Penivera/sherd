@@ -17,12 +17,15 @@ pub(crate) struct CommandOutput {
 /// parsing still works even when the surrounding text doesn't decode
 /// perfectly.
 pub(crate) async fn run_netsh(args: &[&str]) -> std::io::Result<CommandOutput> {
+    tracing::debug!(?args, "running netsh");
     let output = Command::new("netsh").args(args).output().await?;
-    Ok(CommandOutput {
+    let result = CommandOutput {
         success: output.status.success(),
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-    })
+    };
+    tracing::debug!(success = result.success, stdout = %result.stdout.trim(), "netsh finished");
+    Ok(result)
 }
 
 /// Value after the first `:` on a `key : value` style netsh output line,

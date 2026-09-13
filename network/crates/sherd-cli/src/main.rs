@@ -117,8 +117,11 @@ fn print_response(response: &Response) {
         Response::Auto(AutoOutcome::Joined { ssid }) => {
             println!("Joined existing sherd network \"{ssid}\".");
         }
-        Response::Auto(AutoOutcome::Hosting { ssid }) => {
-            println!("No sherd network found nearby -- now hosting \"{ssid}\".");
+        Response::Auto(AutoOutcome::Hosting { ssid, uplink: Some(uplink) }) => {
+            println!("Hosting \"{ssid}\" -- also relaying uplink \"{uplink}\".");
+        }
+        Response::Auto(AutoOutcome::Hosting { ssid, uplink: None }) => {
+            println!("Hosting \"{ssid}\".");
         }
         Response::Auto(AutoOutcome::Unavailable { reason }) => {
             println!("Could not connect: {reason}");

@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 /// Runtime configuration for the "join if possible, else host" flow and for
 /// naming this device's own network.
 ///
@@ -20,6 +22,12 @@ pub struct SherdConfig {
     /// This device's own hotspot SSID, used only if no existing sherd
     /// network is found and this device can host one.
     pub device_ssid: String,
+    /// How often the daemon's background watchdog checks that a link
+    /// (station or hotspot) is still up, retrying `auto_connect` if neither
+    /// is -- what keeps this device "always on": connected to some sherd
+    /// network if possible, hosting its own otherwise. See
+    /// `sherd_daemon::supervise`.
+    pub watchdog_interval: Duration,
 }
 
 impl Default for SherdConfig {
@@ -30,6 +38,7 @@ impl Default for SherdConfig {
             network_prefix,
             shared_key: "sherd-mesh-default".to_string(),
             device_ssid,
+            watchdog_interval: Duration::from_secs(15),
         }
     }
 }

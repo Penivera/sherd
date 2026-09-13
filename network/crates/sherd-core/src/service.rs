@@ -100,10 +100,28 @@ impl SherdService {
         Ok(())
     }
 
-    /// The one flow most users need: join a nearby sherd network if one is
-    /// visible, otherwise host a new one — falling back to a clear warning
-    /// if this device can only ever be a station and none was found. Also
-    /// run automatically by the daemon on startup.
+    /// The one flow most users need. **Hosting is never optional on a
+    /// capable device**: a sherd mesh's range comes from having a hotspot
+    /// running at every node that can run one, not just at whichever single
+    /// device happened to start first — so on a
+    /// [`CapabilityLevel::FullMeshCapable`] adapter this always (re)starts
+    /// this device's own hotspot, unconditionally, regardless of whether any
+    /// other sherd network is visible. It *also* tries to join a visible
+    /// sherd network as a station at the same time, best-effort, because a
+    /// capable adapter can run both roles at once ("full mesh capable" =
+    /// concurrent AP + station on one radio) — joining as well as hosting is
+    /// what turns this device into a repeater that extends someone else's
+    /// hotspot further, rather than just its own separate island. That join
+    /// is attempted *before* starting the hotspot so that, when it
+    /// succeeds, the hotspot has an actual internet/uplink connection to
+    /// tether from (Windows' Mobile Hotspot shares an existing connection —
+    /// it doesn't conjure one).
+    ///
+    /// A station-only device obviously can't host, so for it this is a
+    /// plain join-if-visible-else-warn. Also run automatically by the
+    /// daemon on startup, and by its watchdog (`sherd_daemon::supervise`)
+    /// any time the hotspot (on a capable device) or the station link (on a
+    /// station-only device) isn't up.
     pub async fn auto_connect(&self) -> AutoOutcome {
         let capability = match self.capability().await {
             Ok(report) => report,
@@ -114,46 +132,61 @@ impl SherdService {
             }
         };
 
+        if !matches!(capability.level, CapabilityLevel::FullMeshCapable) {
+            return match self.join_uplink().await {
+                Some(ssid) => self.finish_auto(AutoOutcome::Joined { ssid }),
+                None => self.finish_auto(AutoOutcome::Unavailable {
+                    reason: "no sherd network is visible nearby, and this device's Wi-Fi \
+                             adapter can only join networks, not host one"
+                        .to_string(),
+                }),
+            };
+        }
+
+        let uplink = self.join_uplink().await;
+        let ssid = self.config.device_ssid.clone();
+        match self.hotspot_start(&ssid, &self.config.shared_key).await {
+            Ok(()) => self.finish_auto(AutoOutcome::Hosting { ssid, uplink }),
+            Err(e) => self.finish_auto(AutoOutcome::Unavailable {
+                reason: format!("could not host a network: {e}"),
+            }),
+        }
+    }
+
+    /// Best-effort: try every visible sherd network, strongest signal
+    /// first, and join the first one that actually comes up -- a single
+    /// candidate failing to join (gone by the time we connect, rejected us,
+    /// etc.) shouldn't stop us from trying the next one. Returns the SSID
+    /// joined, or `None` if none were visible or none worked.
+    async fn join_uplink(&self) -> Option<String> {
         let scan = self.backend.station.scan().await.unwrap_or_else(|e| {
             tracing::warn!("scan for nearby sherd networks failed: {e}");
             Vec::new()
         });
 
-        if let Some(found) = scan
+        let mut candidates: Vec<_> = scan
             .iter()
-            .find(|result| result.ssid.starts_with(&self.config.network_prefix))
-        {
-            match self.station_connect(&found.ssid, &self.config.shared_key).await {
+            .filter(|result| result.ssid.starts_with(&self.config.network_prefix))
+            // Never try to join the network we ourselves are about to host.
+            .filter(|result| result.ssid != self.config.device_ssid)
+            .collect();
+        candidates.sort_by_key(|result| std::cmp::Reverse(result.signal_percent.unwrap_or(0)));
+
+        for candidate in candidates {
+            match self.station_connect(&candidate.ssid, &self.config.shared_key).await {
                 Ok(()) if self.wait_for_station_up().await => {
-                    return self.finish_auto(AutoOutcome::Joined { ssid: found.ssid.clone() });
+                    return Some(candidate.ssid.clone());
                 }
                 Ok(()) => {
                     tracing::warn!(
-                        "connect to {} was accepted but the link never came up",
-                        found.ssid
+                        "connect to {} was accepted but the link never came up; trying the next one",
+                        candidate.ssid
                     );
                 }
-                Err(e) => tracing::warn!("failed to join {}: {e}", found.ssid),
+                Err(e) => tracing::warn!("failed to join {}: {e}; trying the next one", candidate.ssid),
             }
-            // Fall through to hosting rather than giving up — the network
-            // we saw might have gone away or rejected us.
         }
-
-        if matches!(capability.level, CapabilityLevel::FullMeshCapable) {
-            let ssid = self.config.device_ssid.clone();
-            return match self.hotspot_start(&ssid, &self.config.shared_key).await {
-                Ok(()) => self.finish_auto(AutoOutcome::Hosting { ssid }),
-                Err(e) => self.finish_auto(AutoOutcome::Unavailable {
-                    reason: format!("could not host a network: {e}"),
-                }),
-            };
-        }
-
-        self.finish_auto(AutoOutcome::Unavailable {
-            reason: "no sherd network is visible nearby, and this device's Wi-Fi adapter can \
-                     only join networks, not host one"
-                .to_string(),
-        })
+        None
     }
 
     fn finish_auto(&self, outcome: AutoOutcome) -> AutoOutcome {
