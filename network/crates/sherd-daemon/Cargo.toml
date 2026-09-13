@@ -21,6 +21,7 @@ interprocess.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 sherd-platform-windows.workspace = true
+widestring.workspace = true
 
 [target.'cfg(not(windows))'.dependencies]
 sherd-platform-linux.workspace = true

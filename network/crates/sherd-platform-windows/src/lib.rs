@@ -16,23 +16,35 @@
 #![cfg(windows)]
 
 mod capability;
+mod composite;
 mod hotspot;
 mod interfaces;
 mod netsh;
 mod station;
+mod winrt_capability;
+mod winrt_hotspot;
 
 pub use capability::NetshCapabilityChecker;
+pub use composite::{CompositeCapabilityChecker, CompositeHotspotController};
 pub use hotspot::NetshHotspotController;
 pub use interfaces::WlanApiInterfaceEnumerator;
 pub use station::NetshStationConnector;
+pub use winrt_capability::WinRtCapabilityChecker;
+pub use winrt_hotspot::WinRtHotspotController;
 
 use sherd_platform::PlatformBackend;
 
 /// Build the Windows platform backend used by the daemon.
+///
+/// Capability and hotspot both go through [`CompositeCapabilityChecker`] /
+/// [`CompositeHotspotController`], which prefer the WinRT Mobile Hotspot
+/// mechanism (what actually works on most modern hardware — see
+/// `winrt_hotspot.rs`) and fall back to the legacy `netsh wlan
+/// hostednetwork` path only when WinRT itself is unavailable.
 pub fn backend() -> PlatformBackend {
     PlatformBackend {
-        capability: Box::new(NetshCapabilityChecker),
-        hotspot: Box::new(NetshHotspotController),
+        capability: Box::new(CompositeCapabilityChecker::new()),
+        hotspot: Box::new(CompositeHotspotController::new()),
         station: Box::new(NetshStationConnector),
         interfaces: Box::new(WlanApiInterfaceEnumerator),
     }

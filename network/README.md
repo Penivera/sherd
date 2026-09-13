@@ -17,8 +17,14 @@ touching `sherd-core`, the daemon, the wire protocol, or any client.
   daemon and every client. No platform/storage deps.
 - `sherd-platform` — OS-agnostic traits (`WifiCapabilityChecker`,
   `HotspotController`, `StationConnector`, `InterfaceEnumerator`).
-- `sherd-platform-windows` — Windows backend: `netsh` for hotspot/station
-  control, WlanAPI (via the `windows` crate) for interface enumeration.
+- `sherd-platform-windows` — Windows backend. Hotspot control and capability
+  detection go through `NetworkOperatorTetheringManager` (the WinRT "Mobile
+  Hotspot" API — `winrt_hotspot.rs`/`winrt_capability.rs`), which is what
+  actually works on most modern hardware; `netsh wlan hostednetwork`
+  (`hotspot.rs`/`capability.rs`) is kept as a fallback for older adapters,
+  tried automatically by `composite.rs` if WinRT reports it can't host.
+  Station connect/scan still use `netsh`; interface listing uses WlanAPI
+  (via the `windows` crate).
 - `sherd-platform-linux` — stub backend (not implemented yet); every method
   returns `NotImplemented`, with doc comments naming the real mechanism
   (`iw`, `hostapd`, `wpa_supplicant`, 802.11s/`batman-adv`) to use later.
@@ -47,11 +53,37 @@ cargo run -p sherd-cli -- station disconnect
 
 ## Known limitations (by design, for this milestone)
 
-- **Hosting requires Administrator.** `netsh wlan set/start hostednetwork`
-  refuses without elevation; run `sherd-daemon` from an elevated prompt if
-  this device is meant to host. Verified live: on a non-elevated prompt the
-  daemon reports a clear command-failure error rather than crashing or
-  misreporting it as unsupported hardware.
+- **(Fixed) the legacy `netsh` capability flag is misleading on modern
+  hardware.** The capability check originally relied solely on `netsh wlan
+  show drivers`'s "Hosted network supported" flag. Verified live on a real
+  Intel Wireless-AC 8260: that flag reads "No", and `netsh wlan start
+  hostednetwork` genuinely fails ("The group or resource is not in the
+  correct state...") — Intel dropped that legacy SoftAP capability years
+  ago — yet Windows' own Mobile Hotspot (Settings > Mobile Hotspot) works
+  fine on the same machine, because it uses an unrelated WinRT mechanism
+  (`NetworkOperatorTetheringManager`) with its own, more accurate
+  capability query (`GetTetheringCapabilityFromConnectionProfile`).
+  `sherd-platform-windows` now tries that WinRT path first for both
+  capability checks and hosting, falling back to the legacy `netsh` path
+  only when WinRT itself says it can't host. Confirmed live end-to-end:
+  capability now reports `FullMeshCapable`, and `hotspot start` actually
+  broadcast a real `Sherd-Diag` SSID from this machine.
+- **Hosting requires Administrator.** Both the legacy `netsh` path and,
+  empirically, the WinRT tethering path refuse without elevation; run
+  `sherd-daemon` from an elevated prompt if this device is meant to host.
+  Verified live: on a non-elevated prompt the daemon reports a clear
+  command-failure error rather than crashing or misreporting it as
+  unsupported hardware.
+- **(Fixed) elevated daemon + non-elevated client.** Running `sherd-daemon`
+  elevated (High integrity) while the CLI/GUI runs as the normal logged-in
+  user (Medium integrity) used to fail with "Access is denied" connecting to
+  the pipe — Windows' default mandatory-integrity policy lets a lower-
+  integrity process open a higher-integrity pipe for reading but silently
+  denies it write access. `sherd-daemon` now creates its pipe with an
+  explicit security descriptor (`D:(A;;GA;;;WD)S:(ML;;NW;;;LW)` — Everyone
+  full access, mandatory label dropped to Low) so any local process can
+  connect regardless of elevation. See `pipe_security_descriptor()` in
+  `sherd-daemon/src/main.rs`.
 - **Shared passphrase is a placeholder.** `SherdConfig::shared_key` defaults
   to a single baked-in passphrase so any two sherd installs can find and
   join each other with zero setup — which is also its downside: as shipped,
@@ -74,7 +106,12 @@ cargo run -p sherd-cli -- station disconnect
 - `cargo build --workspace` and `cargo test --workspace` are clean.
 - Live end-to-end: started the daemon, confirmed `sherd status`/`capability`
   round-trip over the real IPC socket, confirmed `auto` correctly reports
-  `Unavailable` with a clear reason on this machine's actual
-  station-only adapter (no sherd network was nearby to join either), and
-  confirmed a hotspot-start attempt fails with a clear permissions error
-  rather than a crash or a wrong diagnosis.
+  `Unavailable` with a clear reason when run non-elevated (station-only from
+  the daemon's point of view because hosting needs Administrator).
+- Live end-to-end, elevated + WinRT backend: `sherd capability` reports
+  `FullMeshCapable` ("Mobile Hotspot capability: enabled"), and `sherd
+  hotspot start --ssid Sherd-Diag --key ...` actually started broadcasting
+  that SSID from this machine (`sherd status` showed `Hotspot: Up`);
+  `hotspot stop` tore it down cleanly afterward.
+- Live: an elevated daemon's IPC pipe is reachable from a non-elevated
+  client (the `pipe_security_descriptor()` fix above).

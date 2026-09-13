@@ -1,3 +1,10 @@
+//! **Fallback only** — see `winrt_capability.rs`, which is tried first by
+//! `composite.rs`. Verified live on a real Intel Wireless-AC 8260: this
+//! flag reported "No" while Windows' own Mobile Hotspot (a different,
+//! WinRT-based mechanism) worked fine on the same machine. This module is
+//! kept for the rarer hardware where the legacy `hostednetwork` capability
+//! is what actually works instead.
+
 use async_trait::async_trait;
 use sherd_platform::{CapabilityLevel, CapabilityReport, PlatformResult, WifiCapabilityChecker};
 

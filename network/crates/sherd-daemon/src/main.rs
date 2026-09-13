@@ -8,6 +8,8 @@ mod connection;
 use std::sync::Arc;
 
 use interprocess::local_socket::{tokio::prelude::*, GenericNamespaced, ListenerOptions};
+#[cfg(windows)]
+use interprocess::os::windows::local_socket::ListenerOptionsExt;
 use sherd_core::{SherdConfig, SherdService};
 
 #[tokio::main]
@@ -32,7 +34,12 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let name = sherd_protocol::SOCKET_NAME.to_ns_name::<GenericNamespaced>()?;
-    let listener = match ListenerOptions::new().name(name).create_tokio() {
+    let mut listener_options = ListenerOptions::new().name(name);
+    #[cfg(windows)]
+    {
+        listener_options = listener_options.security_descriptor(pipe_security_descriptor()?);
+    }
+    let listener = match listener_options.create_tokio() {
         Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
             anyhow::bail!(
                 "socket \"{}\" is already in use -- is another sherd-daemon already running?",
@@ -60,6 +67,31 @@ async fn main() -> anyhow::Result<()> {
 #[cfg(windows)]
 fn platform_backend() -> sherd_platform::PlatformBackend {
     sherd_platform_windows::backend()
+}
+
+/// A security descriptor granting any local process full access to the IPC
+/// pipe, with its mandatory integrity label dropped to Low.
+///
+/// `sherd-daemon` often runs elevated (High integrity — needed for `netsh
+/// wlan set/start hostednetwork`), but its clients (the CLI, a future GUI)
+/// normally run as the plain logged-in user (Medium integrity). Windows'
+/// default "no write-up" mandatory policy would then let a client open the
+/// pipe for reading but silently deny it write access (seen live: `sherd
+/// status` failed with "Access is denied" against an elevated daemon) — so
+/// both the DACL (`D:(A;;GA;;;WD)`, Generic-All for Everyone) and the
+/// mandatory label (`S:(ML;;NW;;;LW)`, Low with No-Write-Up) need setting
+/// explicitly. This is the standard SDDL incantation for a pipe an elevated
+/// service needs unprivileged local clients to reach.
+#[cfg(windows)]
+fn pipe_security_descriptor(
+) -> anyhow::Result<interprocess::os::windows::security_descriptor::SecurityDescriptor> {
+    use interprocess::os::windows::security_descriptor::SecurityDescriptor;
+    use widestring::U16CString;
+
+    let sddl = U16CString::from_str("D:(A;;GA;;;WD)S:(ML;;NW;;;LW)")
+        .expect("static SDDL string contains no interior NUL");
+    SecurityDescriptor::deserialize(sddl.as_ucstr())
+        .map_err(|e| anyhow::anyhow!("failed to build pipe security descriptor: {e}"))
 }
 
 #[cfg(not(windows))]
