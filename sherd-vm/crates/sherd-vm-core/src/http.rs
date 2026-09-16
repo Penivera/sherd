@@ -8,8 +8,11 @@ use axum::{
     Json, Router,
 };
 use serde::Deserialize;
-use tower_http::cors::{Any, CorsLayer};
-use tracing::{info, warn};
+use tower_http::{
+    cors::{Any, CorsLayer},
+    trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer},
+};
+use tracing::{info, warn, Level};
 
 use crate::{
     config::OsKind,
@@ -46,6 +49,11 @@ pub async fn serve_http(service: Arc<VmService>, addr: SocketAddr, auth_url: Str
         .route("/vm/:id/input", post(send_input))
         .route("/vm/:id/health", get(vm_health))
         .route("/ipc", post(ipc_bridge))
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(DefaultMakeSpan::new().level(Level::INFO))
+                .on_response(DefaultOnResponse::new().level(Level::INFO).latency_unit(tower_http::LatencyUnit::Millis)),
+        )
         .layer(cors)
         .with_state(state);
 
