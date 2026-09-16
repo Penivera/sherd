@@ -1,0 +1,32 @@
+meta {
+  name: Mouse Click
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/vm/{{sessionId}}/input
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+  Authorization: Bearer {{authToken}}
+}
+
+body:json {
+  {
+    "event": {
+      "type": "mouse_click",
+      "x": 640,
+      "y": 360,
+      "button": "left",
+      "humanize": true
+    }
+  }
+}
+
+assert {
+  res.status: eq 200
+}

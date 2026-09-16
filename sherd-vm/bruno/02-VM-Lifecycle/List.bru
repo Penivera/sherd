@@ -1,0 +1,19 @@
+meta {
+  name: List VMs
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/vm/list
+  body: none
+  auth: none
+}
+
+headers {
+  Authorization: Bearer {{authToken}}
+}
+
+assert {
+  res.status: eq 200
+}

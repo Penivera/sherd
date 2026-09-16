@@ -1,0 +1,19 @@
+meta {
+  name: Pause VM
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/vm/{{sessionId}}/pause
+  body: none
+  auth: none
+}
+
+headers {
+  Authorization: Bearer {{authToken}}
+}
+
+assert {
+  res.status: eq 200
+}

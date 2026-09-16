@@ -1,0 +1,19 @@
+meta {
+  name: VM Status
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/vm/{{sessionId}}/status
+  body: none
+  auth: none
+}
+
+headers {
+  Authorization: Bearer {{authToken}}
+}
+
+assert {
+  res.status: eq 200
+}

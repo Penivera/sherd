@@ -1,0 +1,27 @@
+meta {
+  name: Exec uname -a
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/vm/{{sessionId}}/exec
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+  Authorization: Bearer {{authToken}}
+}
+
+body:json {
+  {
+    "cmd": "uname",
+    "args": ["-a"]
+  }
+}
+
+assert {
+  res.status: eq 200
+}

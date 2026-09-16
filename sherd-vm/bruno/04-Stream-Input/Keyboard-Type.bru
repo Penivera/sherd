@@ -1,0 +1,29 @@
+meta {
+  name: Keyboard Type
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/vm/{{sessionId}}/input
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+  Authorization: Bearer {{authToken}}
+}
+
+body:json {
+  {
+    "event": {
+      "type": "key_type",
+      "text": "hello from Bruno"
+    }
+  }
+}
+
+assert {
+  res.status: eq 200
+}
