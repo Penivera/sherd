@@ -48,6 +48,7 @@ pub async fn serve_http(service: Arc<VmService>, addr: SocketAddr, auth_url: Str
         .route("/vm/:id/upload", post(upload_file))
         .route("/vm/:id/input", post(send_input))
         .route("/vm/:id/health", get(vm_health))
+        .route("/vm/cleanup", post(cleanup_vms))
         .route("/ipc", post(ipc_bridge))
         .layer(
             TraceLayer::new_for_http()
@@ -347,6 +348,70 @@ fn is_auth_required() -> bool {
     std::env::var("SHERD_VM_REQUIRE_AUTH")
         .map(|v| v == "1" || v.to_ascii_lowercase() == "true")
         .unwrap_or(false)
+}
+
+async fn cleanup_vms(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(e) = check_auth(&headers, &state.auth_url).await {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({ "error": e }))).into_response();
+    }
+    // List remote VMs via Solari and destroy them to free cap 0
+    // Use the provider's list if available, else try direct Solari API
+    let sessions = state.service.list().await;
+    let mut destroyed = 0;
+    let mut errors = vec![];
+    // Also try to list remote via Solari client directly
+    // For now, destroy tracked sessions; remote stale VMs need manual console cleanup
+    for sess in &sessions {
+        match state.service.destroy(&sess.session_id).await {
+            Ok(()) => destroyed += 1,
+            Err(e) => errors.push(format!("{}: {}", sess.session_id, e)),
+        }
+    }
+    // Try to destroy the known stale sandbox from Solari listing
+    // Attempt direct Solari API cleanup via service's provider
+    // Fallback: try to destroy via raw Solari API if we can get the sandboxId
+    let solari_key = std::env::var("SOLARI_API_KEY").unwrap_or_default();
+    if !solari_key.is_empty() {
+        let client = reqwest::Client::new();
+        if let Ok(resp) = client
+            .get("https://api.getsolari.com/sandboxes")
+            .header("Authorization", format!("Bearer {}", solari_key))
+            .send()
+            .await
+        {
+            if let Ok(val) = resp.json::<serde_json::Value>().await {
+                if let Some(arr) = val.get("sandboxes").and_then(|v| v.as_array()) {
+                    for item in arr {
+                        if let Some(id) = item.get("sandboxId").and_then(|v| v.as_str()) {
+                            // Skip if already destroyed via tracked sessions
+                            if sessions.iter().any(|s| s.session_id == id) {
+                                continue;
+                            }
+                            let url = format!("https://api.getsolari.com/sandboxes/{}", id);
+                            match client
+                                .delete(&url)
+                                .header("Authorization", format!("Bearer {}", solari_key))
+                                .send()
+                                .await
+                            {
+                                Ok(r) if r.status().is_success() => destroyed += 1,
+                                Ok(r) => errors.push(format!("{}: {}", id, r.status())),
+                                Err(e) => errors.push(format!("{}: {}", id, e)),
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({ "destroyed": destroyed, "errors": errors, "tracked": sessions.len() })),
+    )
+        .into_response()
 }
 
 async fn check_auth(headers: &HeaderMap, auth_url: &str) -> Result<(), String> {

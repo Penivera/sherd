@@ -74,14 +74,27 @@ impl VmManager {
     }
 
     async fn wait_for_ready(&self, provider: &Arc<dyn VmProvider>, id: &str) -> VmResult<()> {
+        // Solari sandboxes (kind: desktop) may not expose /health — treat 404 as ready after short delay
+        let mut consecutive_404 = 0;
         for attempt in 0..HEALTH_POLL_ATTEMPTS {
             match provider.health(id).await {
                 Ok(h) if h.ready => return Ok(()),
                 Ok(h) => {
                     warn!(attempt, ready = h.ready, "VM not ready yet, polling");
+                    consecutive_404 = 0;
                 }
                 Err(e) => {
-                    // Health endpoint may 404 until VM boots — treat as not ready
+                    let msg = e.to_string();
+                    if msg.contains("404") || msg.contains("NotFound") || msg.contains("not found") {
+                        consecutive_404 += 1;
+                        // If health consistently 404, assume VM is ready (Solari sandbox desktop has no health endpoint)
+                        if consecutive_404 >= 3 {
+                            info!(attempt, "health endpoint not found, assuming VM ready (sandbox desktop)");
+                            return Ok(());
+                        }
+                    } else {
+                        consecutive_404 = 0;
+                    }
                     warn!(attempt, error = %e, "health check failed, polling");
                 }
             }

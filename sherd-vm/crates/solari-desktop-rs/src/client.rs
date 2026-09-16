@@ -249,13 +249,41 @@ impl DesktopClient {
         let url = format!("{}/desktops", self.opts.base_url);
         let body = serde_json::to_value(&opts).map_err(SolariError::Json)?;
         let key = Self::idempotency_key();
-        // Try /desktops first, fallback to /vms if 404
+        // Try /desktops first, fallback to /sandboxes (Solari lists desktops under /sandboxes with kind: desktop), then /vms
         let res: Result<DesktopSession, SolariError> = self.request_with_retry(reqwest::Method::POST, &url, Some(body.clone()), Some(key.clone())).await;
         match res {
             Ok(s) => Ok(s),
             Err(SolariError::NotFound(_)) | Err(SolariError::Http { status: 404, .. }) => {
-                let alt_url = format!("{}/vms", self.opts.base_url);
-                self.request_with_retry(reqwest::Method::POST, &alt_url, Some(body), Some(key)).await
+                let alt_url = format!("{}/sandboxes", self.opts.base_url);
+                let res2: Result<DesktopSession, SolariError> = self.request_with_retry(reqwest::Method::POST, &alt_url, Some(body.clone()), Some(key.clone())).await;
+                match res2 {
+                    Ok(s) => Ok(s),
+                    Err(SolariError::NotFound(_)) | Err(SolariError::Http { status: 404, .. }) => {
+                        let alt_url2 = format!("{}/vms", self.opts.base_url);
+                        self.request_with_retry(reqwest::Method::POST, &alt_url2, Some(body), Some(key)).await
+                    }
+                    Err(e) => Err(e),
+                }
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    pub async fn list(&self) -> Result<Vec<DesktopSession>, SolariError> {
+        // Solari lists desktops under /sandboxes (kind: desktop) — try there first
+        let url = format!("{}/sandboxes", self.opts.base_url);
+        let res: Result<serde_json::Value, SolariError> = self.request_with_retry(reqwest::Method::GET, &url, None, None).await;
+        match res {
+            Ok(v) => {
+                if let Some(arr) = v.get("sandboxes").and_then(|x| x.as_array()) {
+                    let sessions: Vec<DesktopSession> = serde_json::from_value(serde_json::Value::Array(arr.clone())).unwrap_or_default();
+                    return Ok(sessions);
+                }
+                if let Some(arr) = v.as_array() {
+                    let sessions: Vec<DesktopSession> = serde_json::from_value(v).unwrap_or_default();
+                    return Ok(sessions);
+                }
+                Ok(vec![])
             }
             Err(e) => Err(e),
         }
@@ -282,12 +310,19 @@ impl DesktopClient {
         match res {
             Ok(_) => Ok(()),
             Err(SolariError::NotFound(_)) | Err(SolariError::Http { status: 404, .. }) => {
-                // DELETE is idempotent — treat 404 as success per docs, but try alt path first
-                let alt = format!("{}/vms/{}", self.opts.base_url, enc);
+                let alt = format!("{}/sandboxes/{}", self.opts.base_url, enc);
                 let alt_res: Result<serde_json::Value, SolariError> = self.request_with_retry(reqwest::Method::DELETE, &alt, None, None).await;
                 match alt_res {
                     Ok(_) => Ok(()),
-                    Err(SolariError::NotFound(_)) | Err(SolariError::Http { status: 404, .. }) => Ok(()),
+                    Err(SolariError::NotFound(_)) | Err(SolariError::Http { status: 404, .. }) => {
+                        let alt2 = format!("{}/vms/{}", self.opts.base_url, enc);
+                        let alt_res2: Result<serde_json::Value, SolariError> = self.request_with_retry(reqwest::Method::DELETE, &alt2, None, None).await;
+                        match alt_res2 {
+                            Ok(_) => Ok(()),
+                            Err(SolariError::NotFound(_)) | Err(SolariError::Http { status: 404, .. }) => Ok(()),
+                            Err(e) => Err(e),
+                        }
+                    }
                     Err(e) => Err(e),
                 }
             }
@@ -302,8 +337,16 @@ impl DesktopClient {
         match res {
             Ok(h) => Ok(h),
             Err(SolariError::NotFound(_)) | Err(SolariError::Http { status: 404, .. }) => {
-                let alt = format!("{}/vms/{}/health", self.opts.base_url, enc);
-                self.request_with_retry(reqwest::Method::GET, &alt, None, None).await
+                let alt = format!("{}/sandboxes/{}/health", self.opts.base_url, enc);
+                let res2: Result<Health, SolariError> = self.request_with_retry(reqwest::Method::GET, &alt, None, None).await;
+                match res2 {
+                    Ok(h) => Ok(h),
+                    Err(SolariError::NotFound(_)) | Err(SolariError::Http { status: 404, .. }) => {
+                        let alt2 = format!("{}/vms/{}/health", self.opts.base_url, enc);
+                        self.request_with_retry(reqwest::Method::GET, &alt2, None, None).await
+                    }
+                    Err(e) => Err(e),
+                }
             }
             Err(e) => Err(e),
         }
