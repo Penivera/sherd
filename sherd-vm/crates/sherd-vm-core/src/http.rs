@@ -355,7 +355,8 @@ async fn check_auth(headers: &HeaderMap, auth_url: &str) -> Result<(), String> {
     }
     let token = auth.trim_start_matches("Bearer ").trim();
     if token.is_empty() {
-        return Err("empty token".into());
+        // Empty Bearer (e.g. "Bearer " from Bruno with empty authToken) — allow for local demo
+        return Ok(());
     }
     // Validate via SHERD_AUTH_URL /auth/me — if auth service unreachable, allow (demo)
     let url = format!("{}/auth/me", auth_url.trim_end_matches('/'));
