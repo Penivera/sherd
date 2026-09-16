@@ -137,6 +137,9 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Load .env from sherd-vm/ and workspace root — ignore if missing
+    let _ = dotenvy::from_filename("/Users/icekid/Projects/sherd/sherd-vm/.env");
+    let _ = dotenvy::dotenv();
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
         .init();
@@ -338,6 +341,20 @@ async fn serve(socket: Option<String>, http_port: u16, no_http: bool) -> anyhow:
         VmManager::with_providers(linux, windows)
     }));
     let service = Arc::new(VmService::new(manager));
+    // Graceful shutdown on Ctrl+C — cleans up /tmp/*.sock
+    let shutdown_socket = socket.clone();
+    tokio::spawn(async move {
+        let _ = tokio::signal::ctrl_c().await;
+        info!("shutting down (Ctrl+C)");
+        if let Some(name) = shutdown_socket.as_deref() {
+            for p in [format!("/tmp/{}", name), format!("/tmp/{}", name.replace('/', "_"))] {
+                let _ = std::fs::remove_file(&p);
+            }
+        } else {
+            let _ = std::fs::remove_file("/tmp/sherd-vm.sock");
+        }
+        std::process::exit(0);
+    });
     if no_http {
         info!(socket = ?socket, "starting sherd-vm IPC daemon (no HTTP)");
         return ipc::serve(service, socket).await;
@@ -350,6 +367,6 @@ async fn serve(socket: Option<String>, http_port: u16, no_http: bool) -> anyhow:
             error!("HTTP bridge failed: {}", e);
         }
     });
-    info!(socket = ?socket, http_port, "starting sherd-vm IPC daemon + HTTP bridge");
+    info!(socket = ?socket, http_port, "starting sherd-vm IPC daemon + HTTP bridge (Ctrl+C to stop)");
     ipc::serve(service, socket).await
 }

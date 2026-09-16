@@ -69,11 +69,27 @@ fn decode_line<T: for<'de> Deserialize<'de>>(line: &str) -> serde_json::Result<T
 
 pub async fn serve(service: Arc<VmService>, socket_name: Option<String>) -> anyhow::Result<()> {
     let name = socket_name.unwrap_or_else(|| VM_SOCKET_NAME.to_string());
+    // Clean up stale socket file left behind by unclean shutdown (Ctrl+C)
+    // GenericNamespaced on macOS/Linux uses a file at /tmp/<name>
+    for stale in [format!("/tmp/{}", name), format!("/tmp/{}", name.replace('/', "_"))] {
+        if std::path::Path::new(&stale).exists() {
+            let _ = std::fs::remove_file(&stale);
+            info!(path = %stale, "removed stale IPC socket");
+        }
+    }
     let ns_name = name.clone().to_ns_name::<GenericNamespaced>()?;
     let listener = match ListenerOptions::new().name(ns_name).create_tokio() {
         Ok(l) => l,
         Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
-            anyhow::bail!("VM IPC socket already in use ({}): {}", name, e);
+            // One more try after cleanup — if still in use, a live daemon is running
+            for stale in [format!("/tmp/{}", name), format!("/tmp/{}", name.replace('/', "_"))] {
+                let _ = std::fs::remove_file(&stale);
+            }
+            let ns_name2 = name.clone().to_ns_name::<GenericNamespaced>()?;
+            match ListenerOptions::new().name(ns_name2).create_tokio() {
+                Ok(l) => l,
+                Err(_) => anyhow::bail!("VM IPC socket already in use ({}): {} — is another sherd-vm running? Remove /tmp/{} if stale", name, e, name),
+            }
         }
         Err(e) => return Err(e.into()),
     };
