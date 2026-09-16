@@ -106,7 +106,8 @@ async fn create_vm(
         Ok(sess) => (StatusCode::CREATED, Json(serde_json::to_value(&sess).unwrap())).into_response(),
         Err(e) => {
             let msg = e.to_string();
-            if msg.contains("ConcurrencyLimit") || msg.contains("concurrency") {
+            tracing::error!(error = %msg, "vm create failed");
+            if msg.contains("ConcurrencyLimit") || msg.contains("concurrency") || msg.contains("429") {
                 (StatusCode::TOO_MANY_REQUESTS, Json(serde_json::json!({ "error": msg }))).into_response()
             } else if msg.contains("NotImplemented") || msg.contains("not implemented") {
                 (StatusCode::NOT_IMPLEMENTED, Json(serde_json::json!({ "error": msg }))).into_response()
