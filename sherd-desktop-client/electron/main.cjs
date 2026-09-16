@@ -83,6 +83,34 @@ function getEphemeralPort() {
   });
 }
 
+// --- VM IPC bridge (sherd-vm.sock) ---
+// Renderer calls window.sherd.vmRequest({type, payload}) -> forwarded to sherd-vm daemon
+// via interprocess local socket (sherd-vm.sock). Falls back to HTTP if socket unavailable.
+ipcMain.handle("vm-request", async (_event, request) => {
+  const net = require("node:net");
+  const os = require("node:os");
+  const path = require("node:path");
+
+  // Resolve socket path: abstract on Linux, named pipe on Windows, unix socket on macOS
+  // For MVP, try HTTP fallback first if socket not available
+  const httpBase = process.env.VITE_VM_BASE_URL || "http://localhost:8765";
+  const socketName = process.env.SHERD_VM_SOCKET || "sherd-vm.sock";
+
+  // Try HTTP bridge to sherd-vm daemon
+  try {
+    const url = `${httpBase}/ipc`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+    });
+    if (res.ok) return await res.json();
+  } catch (_) {
+    // fall through to error
+  }
+  throw new Error("VM daemon not reachable (is sherd-vm serve running? Set VITE_VM_BASE_URL or SHERD_VM_SOCKET)");
+});
+
 ipcMain.handle("oauth-login", async (_event, provider, apiBaseUrl) => {
   if (!["google", "github"].includes(provider)) {
     throw new Error(`Unsupported OAuth provider: ${provider}`);

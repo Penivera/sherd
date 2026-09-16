@@ -5,4 +5,5 @@ const { contextBridge, ipcRenderer } = require("electron");
 // Nothing else from Node/Electron is exposed.
 contextBridge.exposeInMainWorld("sherd", {
   oauthLogin: (provider, apiBaseUrl) => ipcRenderer.invoke("oauth-login", provider, apiBaseUrl),
+  vmRequest: (request) => ipcRenderer.invoke("vm-request", request),
 });
