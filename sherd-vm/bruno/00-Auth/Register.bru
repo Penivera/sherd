@@ -1,0 +1,35 @@
+meta {
+  name: Register (create user)
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{authUrl}}/auth/register
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "email": "{{authEmail}}",
+    "password": "{{authPassword}}"
+  }
+}
+
+vars:post-response {
+  authToken: res.body.access_token
+}
+
+docs {
+  Creates a new user in sherd-auth and saves JWT.
+  Run this once if Login returns 401 (user not found).
+}
+
+assert {
+  res.status: in [200, 201]
+}

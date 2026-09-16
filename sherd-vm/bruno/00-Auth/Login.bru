@@ -1,0 +1,36 @@
+meta {
+  name: Login (get JWT)
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{authUrl}}/auth/login
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "email": "{{authEmail}}",
+    "password": "{{authPassword}}"
+  }
+}
+
+vars:post-response {
+  authToken: res.body.access_token
+}
+
+docs {
+  Logs into sherd-auth and saves JWT to authToken for subsequent VM requests.
+  Set authEmail/authPassword in Local.bru or pass via --env-var.
+  If sherd-auth is not running, this will fail — VM requests still work with SHERD_VM_REQUIRE_AUTH=0 (default).
+}
+
+assert {
+  res.status: eq 200
+}

@@ -342,21 +342,26 @@ async fn ipc_bridge(
     (StatusCode::OK, Json(serde_json::to_value(&resp).unwrap())).into_response()
 }
 
+fn is_auth_required() -> bool {
+    std::env::var("SHERD_VM_REQUIRE_AUTH")
+        .map(|v| v == "1" || v.to_ascii_lowercase() == "true")
+        .unwrap_or(false)
+}
+
 async fn check_auth(headers: &HeaderMap, auth_url: &str) -> Result<(), String> {
-    // If no auth_url configured or empty, skip check (demo mode)
-    // If Authorization header missing, allow for local demo (but log)
-    let Some(auth) = headers.get("authorization").and_then(|v| v.to_str().ok()) else {
-        // Allow unauthenticated for local demo — desktop mock will work without JWT
-        // In production, require it: return Err("missing Authorization".into());
+    // Local demo: auth is optional unless SHERD_VM_REQUIRE_AUTH=1
+    if !is_auth_required() {
         return Ok(());
+    }
+    let Some(auth) = headers.get("authorization").and_then(|v| v.to_str().ok()) else {
+        return Err("missing Authorization: set SHERD_VM_REQUIRE_AUTH=0 for local demo or pass Bearer token".into());
     };
     if !auth.starts_with("Bearer ") {
         return Err("invalid Authorization header".into());
     }
     let token = auth.trim_start_matches("Bearer ").trim();
     if token.is_empty() {
-        // Empty Bearer (e.g. "Bearer " from Bruno with empty authToken) — allow for local demo
-        return Ok(());
+        return Err("empty Bearer token".into());
     }
     // Validate via SHERD_AUTH_URL /auth/me — if auth service unreachable, allow (demo)
     let url = format!("{}/auth/me", auth_url.trim_end_matches('/'));
