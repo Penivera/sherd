@@ -1,0 +1,33 @@
+meta {
+  name: Upload file
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/vm/{{sessionId}}/upload
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+  Authorization: Bearer {{authToken}}
+}
+
+body:json {
+  {
+    "path": "/tmp/hello.txt",
+    "content_base64": "aGVsbG8gZnJvbSBCcnVubyE="
+  }
+}
+
+docs {
+  Uploads "hello from Bruno!" to /tmp/hello.txt.
+  content_base64 is base64 of file bytes.
+  Verify with Exec cat /tmp/hello.txt.
+}
+
+assert {
+  res.status: eq 200
+}

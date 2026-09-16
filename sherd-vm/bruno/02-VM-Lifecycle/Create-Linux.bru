@@ -1,0 +1,43 @@
+meta {
+  name: Create Linux VM
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/vm/create
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+  Authorization: Bearer {{authToken}}
+}
+
+body:json {
+  {
+    "os": "linux",
+    "template": "default",
+    "resolution": "1280x720",
+    "cpu": 2,
+    "mem_mb": 4096,
+    "lifecycle": "pause"
+  }
+}
+
+assert {
+  res.status: eq 201
+}
+
+script:post-response {
+  if (res.status === 201 && res.body.session_id) {
+    bru.setVar("sessionId", res.body.session_id);
+    console.log("sessionId:", res.body.session_id);
+    if (res.body.stream_url) console.log("stream_url:", res.body.stream_url);
+  }
+  // Also handle snake_case
+  if (res.status === 201 && res.body.sessionId) {
+    bru.setVar("sessionId", res.body.sessionId);
+  }
+}

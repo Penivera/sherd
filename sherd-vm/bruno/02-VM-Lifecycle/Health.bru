@@ -1,0 +1,20 @@
+meta {
+  name: VM Health
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/vm/{{sessionId}}/health
+  body: none
+  auth: none
+}
+
+headers {
+  Authorization: Bearer {{authToken}}
+}
+
+assert {
+  res.status: eq 200
+  res.body.ready: eq true
+}
