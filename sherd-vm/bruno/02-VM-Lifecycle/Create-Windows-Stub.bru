@@ -24,7 +24,10 @@ body:json {
   }
 }
 
-# Windows provider is stub — should return NotImplemented
+docs {
+  Windows provider is stub — should return NotImplemented
+}
+
 assert {
   res.status: in [400, 501]
 }
