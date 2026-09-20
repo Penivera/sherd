@@ -5,7 +5,7 @@ use crate::state::{AppState, MeshNode, MeshTask};
 use crate::theme::{
     Theme, BUTTON_HEIGHT_SM, FONT_LG, FONT_MD, FONT_SM, FONT_XS, FONT_2XS,
     RADIUS_FULL, RADIUS_LG, RADIUS_MD, RADIUS_SM, SPACE_LG, SPACE_MD, SPACE_SM,
-    SPACE_XL, SPACE_XS, SPACE_2XL,
+    SPACE_XL, SPACE_XS,
 };
 
 pub fn render_mesh(
@@ -48,8 +48,8 @@ pub fn render_mesh(
                 .flex()
                 .items_center()
                 .justify_between()
-                .pl(SPACE_2XL)
-                .pr(px(68.0))
+                .px(SPACE_XL)
+                .pr(px(64.0))
                 .py(SPACE_MD)
                 .border_b_1()
                 .border_color(theme.card_border)
@@ -99,6 +99,7 @@ pub fn render_mesh(
                                         .text_size(FONT_SM)
                                         .font_weight(FontWeight::MEDIUM)
                                         .text_color(theme.text_sub_muted)
+                                        .truncate()
                                         .child("Mesh Dashboard"),
                                 ),
                         )
@@ -114,6 +115,7 @@ pub fn render_mesh(
                                 .bg(theme.accent_light)
                                 .border_1()
                                 .border_color(theme.accent)
+                                .flex_none()
                                 .child(
                                     div()
                                         .w(px(6.0))
@@ -136,6 +138,7 @@ pub fn render_mesh(
                         .flex()
                         .items_center()
                         .gap(SPACE_MD)
+                        .flex_shrink_0()
                         .child(
                             div()
                                 .h(BUTTON_HEIGHT_SM)
@@ -174,6 +177,7 @@ pub fn render_mesh(
                                         .text_size(FONT_XS)
                                         .font_weight(FontWeight::MEDIUM)
                                         .text_color(theme.text_primary)
+                                        .truncate()
                                         .child(user_label),
                                 ),
                         )
@@ -202,10 +206,14 @@ pub fn render_mesh(
         .child(
             // DESKTOP MULTI-COLUMN WORKSPACE
             div()
+                .id("mesh-workspace-scroll")
                 .flex()
                 .flex_row()
                 .flex_1()
-                .size_full()
+                .w_full()
+                .min_h_0()
+                .min_w_0()
+                .overflow_y_scroll()
                 .p(SPACE_XL)
                 .gap(SPACE_XL)
                 // LEFT SIDEBAR: Telemetry & Terminal Guidance
@@ -213,7 +221,7 @@ pub fn render_mesh(
                     div()
                         .flex()
                         .flex_col()
-                        .w(px(320.0))
+                        .w(px(280.0))
                         .flex_shrink_0()
                         .gap(SPACE_LG)
                         // Client Telemetry Card
@@ -293,7 +301,7 @@ pub fn render_mesh(
                                         .child(
                                             "Return to your terminal or editor. Commands dispatched through the client daemon are distributed across the mesh nodes, and execution results stream directly back.",
                                         ),
-                                ),
+                                 ),
                         ),
                 )
                 // RIGHT MAIN PANEL: Active Nodes Grid + Task Activity Stream
@@ -302,6 +310,7 @@ pub fn render_mesh(
                         .flex()
                         .flex_col()
                         .flex_1()
+                        .min_w_0()
                         .gap(SPACE_XL)
                         // SECTION 1: Active Nodes in Mesh (Desktop Grid)
                         .child(
@@ -342,6 +351,7 @@ pub fn render_mesh(
                                             div()
                                                 .text_size(FONT_XS)
                                                 .text_color(theme.text_muted)
+                                                .truncate()
                                                 .child("Sorted by lowest price & latency"),
                                         ),
                                 )
@@ -394,6 +404,7 @@ pub fn render_mesh(
                                             div()
                                                 .text_size(FONT_XS)
                                                 .text_color(theme.text_muted)
+                                                .truncate()
                                                 .child("Real-time distributed workload logs"),
                                         ),
                                 )
@@ -419,7 +430,8 @@ pub fn render_mesh(
                                                 .bg(theme.sidebar_bg)
                                                 .child(
                                                     div()
-                                                        .w(px(80.0))
+                                                        .w(px(70.0))
+                                                        .flex_shrink_0()
                                                         .text_size(FONT_2XS)
                                                         .font_weight(FontWeight::SEMIBOLD)
                                                         .text_color(theme.text_muted)
@@ -428,6 +440,7 @@ pub fn render_mesh(
                                                 .child(
                                                     div()
                                                         .flex_1()
+                                                        .min_w_0()
                                                         .text_size(FONT_2XS)
                                                         .font_weight(FontWeight::SEMIBOLD)
                                                         .text_color(theme.text_muted)
@@ -435,7 +448,8 @@ pub fn render_mesh(
                                                 )
                                                 .child(
                                                     div()
-                                                        .w(px(140.0))
+                                                        .w(px(110.0))
+                                                        .flex_shrink_0()
                                                         .text_size(FONT_2XS)
                                                         .font_weight(FontWeight::SEMIBOLD)
                                                         .text_color(theme.text_muted)
@@ -443,7 +457,8 @@ pub fn render_mesh(
                                                 )
                                                 .child(
                                                     div()
-                                                        .w(px(100.0))
+                                                        .w(px(90.0))
+                                                        .flex_shrink_0()
                                                         .text_size(FONT_2XS)
                                                         .font_weight(FontWeight::SEMIBOLD)
                                                         .text_color(theme.text_muted)
@@ -485,7 +500,9 @@ fn render_stat_row(label: &'static str, val: &'static str, theme: &Theme) -> imp
 
 fn render_desktop_node_card(node: &MeshNode, theme: &Theme) -> impl IntoElement {
     div()
-        .w(px(180.0))
+        .min_w(px(160.0))
+        .flex_1()
+        .max_w(px(220.0))
         .p(SPACE_MD)
         .rounded(RADIUS_MD)
         .border_1()
@@ -531,6 +548,7 @@ fn render_desktop_node_card(node: &MeshNode, theme: &Theme) -> impl IntoElement 
                 .text_size(FONT_SM)
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(theme.text_primary)
+                .truncate()
                 .child(format!("Peer Node {}", node.id)),
         )
         .child(
@@ -564,7 +582,8 @@ fn render_desktop_task_row(task: &MeshTask, theme: &Theme) -> impl IntoElement {
         .border_color(theme.card_border)
         .child(
             div()
-                .w(px(80.0))
+                .w(px(70.0))
+                .flex_shrink_0()
                 .text_size(FONT_XS)
                 .font_family("monospace")
                 .text_color(theme.text_muted)
@@ -573,15 +592,18 @@ fn render_desktop_task_row(task: &MeshTask, theme: &Theme) -> impl IntoElement {
         .child(
             div()
                 .flex_1()
+                .min_w_0()
                 .text_size(FONT_SM)
                 .font_family("monospace")
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(theme.text_primary)
+                .truncate()
                 .child(task.cmd.clone()),
         )
         .child(
             div()
-                .w(px(140.0))
+                .w(px(110.0))
+                .flex_shrink_0()
                 .flex()
                 .items_center()
                 .gap(SPACE_SM)
@@ -590,18 +612,21 @@ fn render_desktop_task_row(task: &MeshTask, theme: &Theme) -> impl IntoElement {
                         .w(px(8.0))
                         .h(px(8.0))
                         .rounded(RADIUS_FULL)
-                        .bg(theme.accent),
+                        .bg(theme.accent)
+                        .flex_none(),
                 )
                 .child(
                     div()
                         .text_size(FONT_XS)
                         .text_color(theme.text_sub_muted)
+                        .truncate()
                         .child(task.node.clone()),
                 ),
         )
         .child(
             div()
-                .w(px(100.0))
+                .w(px(90.0))
+                .flex_shrink_0()
                 .child(
                     div()
                         .px(SPACE_SM)
@@ -615,7 +640,7 @@ fn render_desktop_task_row(task: &MeshTask, theme: &Theme) -> impl IntoElement {
                                         .text_size(FONT_2XS)
                                         .font_weight(FontWeight::MEDIUM)
                                         .text_color(theme.accent)
-                                        .child("● Running..."),
+                                        .child("● Running"),
                                 )
                         })
                         .when(task.status == "done", |s| {
@@ -625,10 +650,9 @@ fn render_desktop_task_row(task: &MeshTask, theme: &Theme) -> impl IntoElement {
                                         .text_size(FONT_2XS)
                                         .font_weight(FontWeight::MEDIUM)
                                         .text_color(theme.text_muted)
-                                        .child("✓ Complete"),
+                                        .child("✓ Done"),
                                 )
                         }),
                 ),
         )
 }
-

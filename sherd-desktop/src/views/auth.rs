@@ -64,30 +64,39 @@ pub fn render_auth(
     let masked_password: String = "•".repeat(password.len());
 
     div()
+        .id("auth-scroll-container")
         .flex()
-        .items_center()
-        .justify_center()
+        .flex_col()
         .size_full()
+        .overflow_y_scroll()
         .bg(theme.background)
-        .px(SPACE_2XL)
-        .py(SPACE_XL)
         .child(
-            // Desktop 2-column container
             div()
                 .flex()
                 .flex_row()
+                .min_h_full()
+                .w_full()
                 .items_center()
                 .justify_center()
-                .w_full()
-                .max_w(px(920.0))
-                .gap(SPACE_2XL)
-                // LEFT COLUMN: Branding & Edge Network Capability Panel
+                .p(SPACE_XL)
                 .child(
+                    // Desktop 2-column container
                     div()
                         .flex()
-                        .flex_col()
-                        .flex_1()
-                        .gap(SPACE_LG)
+                        .flex_row()
+                        .items_center()
+                        .justify_center()
+                        .w_full()
+                        .max_w(px(920.0))
+                        .gap(SPACE_2XL)
+                        // LEFT COLUMN: Branding & Edge Network Capability Panel
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .flex_1()
+                                .min_w_0()
+                                .gap(SPACE_LG)
                         .child(
                             // Brand badge
                             div()
@@ -182,19 +191,20 @@ pub fn render_auth(
                                 .bg(theme.card_bg)
                                 .border_1()
                                 .border_color(theme.card_border)
-                                .flex_none()
                                 .child(
                                     div()
                                         .w(px(8.0))
                                         .h(px(8.0))
                                         .rounded(RADIUS_FULL)
-                                        .bg(theme.success),
+                                        .bg(theme.success)
+                                        .flex_none(),
                                 )
                                 .child(
                                     div()
                                         .text_size(FONT_XS)
                                         .font_weight(FontWeight::MEDIUM)
                                         .text_color(theme.text_sub_muted)
+                                        .truncate()
                                         .child("247 nodes active • avg 14ms latency • Mainnet Beta"),
                                 ),
                         ),
@@ -512,6 +522,7 @@ pub fn render_auth(
                         }),
                 ),
         )
+        )
 }
 
 fn render_feature_item(icon: &'static str, title: &'static str, desc: &'static str, theme: &Theme) -> impl IntoElement {
@@ -522,12 +533,15 @@ fn render_feature_item(icon: &'static str, title: &'static str, desc: &'static s
         .child(
             div()
                 .text_size(FONT_MD)
+                .flex_none()
                 .child(icon),
         )
         .child(
             div()
                 .flex()
                 .flex_col()
+                .flex_1()
+                .min_w_0()
                 .gap(px(1.0))
                 .child(
                     div()

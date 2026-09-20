@@ -2,9 +2,9 @@ use gpui::prelude::FluentBuilder;
 use gpui::*;
 
 use crate::theme::{
-    Theme, BUTTON_HEIGHT, FONT_2XL, FONT_BASE, FONT_LG, FONT_SM, FONT_XS, FONT_2XS,
+    Theme, BUTTON_HEIGHT, FONT_2XS, FONT_BASE, FONT_LG, FONT_SM, FONT_XS, FONT_2XL,
     RADIUS_FULL, RADIUS_LG, RADIUS_MD, SPACE_LG, SPACE_MD, SPACE_SM, SPACE_XL,
-    SPACE_2XL, SPACE_3XL,
+    SPACE_2XL,
 };
 
 pub fn render_toggle(
@@ -38,27 +38,34 @@ pub fn render_toggle(
     };
 
     div()
+        .id("toggle-scroll-container")
         .flex()
         .flex_col()
-        .items_center()
-        .justify_center()
         .size_full()
+        .overflow_y_scroll()
         .bg(theme.background)
-        .px(SPACE_3XL)
-        .py(SPACE_2XL)
         .child(
-            // Desktop Center Card
             div()
                 .flex()
-                .flex_col()
+                .flex_row()
+                .min_h_full()
                 .w_full()
-                .max_w(px(600.0))
-                .rounded(RADIUS_LG)
-                .border_1()
-                .border_color(theme.card_border)
-                .bg(theme.card_bg)
-                .p(SPACE_2XL)
-                .shadow_lg()
+                .items_center()
+                .justify_center()
+                .p(SPACE_XL)
+                .child(
+                    // Desktop Center Card
+                    div()
+                        .flex()
+                        .flex_col()
+                        .w_full()
+                        .max_w(px(600.0))
+                        .rounded(RADIUS_LG)
+                        .border_1()
+                        .border_color(theme.card_border)
+                        .bg(theme.card_bg)
+                        .p(SPACE_2XL)
+                        .shadow_lg()
                 .child(
                     // Status badge & Icon row
                     div()
@@ -275,11 +282,13 @@ pub fn render_toggle(
                         .child("Enter Mesh Dashboard →"),
                 ),
         )
+        )
 }
 
 fn render_param_chip(label: &'static str, value: &'static str, theme: &Theme) -> impl IntoElement {
     div()
         .flex_1()
+        .min_w_0()
         .flex()
         .flex_col()
         .gap(px(2.0))
@@ -293,6 +302,7 @@ fn render_param_chip(label: &'static str, value: &'static str, theme: &Theme) ->
                 .text_size(FONT_2XS)
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(theme.text_muted)
+                .truncate()
                 .child(label),
         )
         .child(
@@ -300,6 +310,7 @@ fn render_param_chip(label: &'static str, value: &'static str, theme: &Theme) ->
                 .text_size(FONT_SM)
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(theme.text_primary)
+                .truncate()
                 .child(value),
         )
 }
