@@ -364,8 +364,34 @@ impl Render for SherdApp {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn configure_desktop_environment() {
+    // GNOME on Wayland (Mutter) does not implement server-side decorations (zxdg_decoration_manager_v1).
+    // Native Wayland applications on GNOME without client-side decorations are rendered borderless.
+    // However, GNOME Mutter provides full native server-side decorations (titlebar with minimize,
+    // maximize, close controls, and edge/corner resizing) to X11/XWayland applications.
+    // When running under GNOME and DISPLAY is available, unsetting WAYLAND_DISPLAY enables GNOME
+    // to supply the genuine OS-level window frame and native window controls.
+    let is_gnome = std::env::var("XDG_CURRENT_DESKTOP")
+        .map(|d| d.to_uppercase().contains("GNOME"))
+        .unwrap_or(false)
+        || std::env::var("DESKTOP_SESSION")
+            .map(|s| s.to_lowercase().contains("gnome"))
+            .unwrap_or(false);
+
+    let has_x11 = std::env::var_os("DISPLAY").is_some();
+    let force_wayland = std::env::var_os("SHERD_FORCE_WAYLAND").is_some();
+
+    if is_gnome && has_x11 && !force_wayland {
+        std::env::remove_var("WAYLAND_DISPLAY");
+    }
+}
+
 fn main() {
     tracing_subscriber::fmt::init();
+
+    #[cfg(target_os = "linux")]
+    configure_desktop_environment();
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -379,14 +405,25 @@ fn main() {
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             titlebar: Some(TitlebarOptions {
-                title: Some("Sherd • Decentralized Edge Compute".into()),
-                ..Default::default()
+                title: Some("SHERD".into()),
+                appears_transparent: false,
+                traffic_light_position: None,
             }),
             window_min_size: Some(size(px(840.0), px(560.0))),
+            window_decorations: Some(WindowDecorations::Server),
+            is_movable: true,
+            is_resizable: true,
+            is_minimizable: true,
+            focus: true,
+            show: true,
+            kind: WindowKind::Normal,
             ..Default::default()
         };
 
-        cx.open_window(options, |_, cx| cx.new(|cx| SherdApp::new(cx)))
-            .unwrap();
+        cx.open_window(options, |window, cx| {
+            window.set_window_title("SHERD");
+            cx.new(|cx| SherdApp::new(cx))
+        })
+        .unwrap();
     });
 }
