@@ -1,38 +1,34 @@
+use gpui::prelude::FluentBuilder;
 use gpui::*;
 
-use crate::theme::{Theme, ORANGE};
+use crate::theme::Theme;
 
 pub fn render_toggle_switch(on: bool, theme: &Theme) -> impl IntoElement {
     let bg_color = if on {
-        ORANGE
+        theme.accent
     } else if theme.is_dark {
-        rgb(0x404040)
+        rgb(0x3f3f46)
     } else {
-        rgb(0xe5e5e5)
+        rgb(0xcbd5e1)
     };
 
     div()
-        .w(px(64.0))
-        .h(px(36.0))
-        .rounded(px(18.0))
+        .w(px(48.0))
+        .h(px(26.0))
+        .rounded(px(13.0))
         .bg(bg_color)
         .flex()
         .items_center()
-        .px(px(4.0))
+        .px(px(3.0))
         .cursor_pointer()
         .child(
             div()
-                .flex()
-                .size_full()
-                .items_center()
-                .justify_between()
-                .child(
-                    div()
-                        .w(px(28.0))
-                        .h(px(28.0))
-                        .rounded(px(14.0))
-                        .bg(rgb(0xffffff))
-                        .shadow_sm()
-                )
+                .w(px(20.0))
+                .h(px(20.0))
+                .rounded(px(10.0))
+                .bg(rgb(0xffffff))
+                .shadow_sm()
+                .when(on, |s| s.ml(px(22.0))),
         )
 }
+

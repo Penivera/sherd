@@ -325,25 +325,32 @@ impl Render for SherdApp {
                 // Theme toggle button (fixed top right)
                 div()
                     .absolute()
-                    .top(px(16.0))
+                    .top(px(12.0))
                     .right(px(16.0))
-                    .w(px(40.0))
-                    .h(px(40.0))
-                    .rounded(px(20.0))
+                    .w(px(34.0))
+                    .h(px(34.0))
+                    .rounded(px(17.0))
                     .bg(if theme.is_dark {
-                        rgb(0x262626)
+                        rgb(0x27272a)
                     } else {
-                        rgb(0xf5f5f5)
+                        rgb(0xf1f5f9)
+                    })
+                    .border_1()
+                    .border_color(if theme.is_dark {
+                        rgb(0x3f3f46)
+                    } else {
+                        rgb(0xe2e8f0)
                     })
                     .text_color(if theme.is_dark {
-                        rgb(0xf5f5f5)
+                        rgb(0xf4f4f5)
                     } else {
-                        rgb(0x525252)
+                        rgb(0x334155)
                     })
                     .flex()
                     .items_center()
                     .justify_center()
                     .cursor_pointer()
+                    .hover(|s| s.border_color(theme.accent))
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|this, _, _, cx| {
@@ -367,14 +374,15 @@ fn main() {
     let _guard = rt.enter();
 
     Application::new().run(|cx: &mut App| {
-        let bounds = Bounds::centered(None, size(px(480.0), px(800.0)), cx);
+        // Desktop window: 1080x720 centered, minimum 840x560
+        let bounds = Bounds::centered(None, size(px(1080.0), px(720.0)), cx);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             titlebar: Some(TitlebarOptions {
-                title: Some("Sherd".into()),
+                title: Some("Sherd • Decentralized Edge Compute".into()),
                 ..Default::default()
             }),
-            window_min_size: Some(size(px(380.0), px(600.0))),
+            window_min_size: Some(size(px(840.0), px(560.0))),
             ..Default::default()
         };
 
