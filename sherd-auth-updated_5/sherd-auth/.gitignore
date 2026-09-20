@@ -1,8 +1,0 @@
-__pycache__/
-*.pyc
-.venv/
-.env
-*.db
-.pytest_cache/
-.uv/
-uv.lock.bak
