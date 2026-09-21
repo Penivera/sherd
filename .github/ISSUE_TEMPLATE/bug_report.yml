@@ -1,0 +1,74 @@
+name: Bug report
+description: Report something that isn't working as expected
+title: "[bug]: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. Please fill in as much detail
+        as you can — platform-specific issues are much easier to fix with the
+        exact commands and output.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which part of the project does this affect?
+      options:
+        - mesh / mempool / wire (P2P layer)
+        - network daemon / CLI / IPC
+        - platform-windows backend
+        - platform-linux backend
+        - desktop client
+        - build / tooling / CI
+        - not sure
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug, including what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Exact commands and steps. Include the command that failed.
+      placeholder: |
+        1. cargo run -p daemon
+        2. cargo run -p cli -- status
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Relevant logs / output
+      description: Paste the error output. Set RUST_LOG=debug for more detail.
+      render: shell
+    validations:
+      required: false
+  - type: input
+    id: os
+    attributes:
+      label: OS and version
+      placeholder: e.g. Windows 11 23H2, Ubuntu 24.04
+    validations:
+      required: true
+  - type: input
+    id: rust
+    attributes:
+      label: Rust version
+      description: Output of `rustc --version`.
+      placeholder: e.g. rustc 1.82.0
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Anything else that might help — hardware, Wi-Fi adapter, elevation, etc.
+    validations:
+      required: false

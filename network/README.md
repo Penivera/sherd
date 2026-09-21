@@ -5,9 +5,7 @@ staying connected upstream (STA+AP); other sherd devices join it. The
 "just works" flow: run `sherd-daemon`, and it automatically joins a nearby
 sherd network if one exists, or hosts its own if it doesn't.
 
-Windows-first (see the plan at
-`C:\Users\Lenovo\.claude\plans\windows-is-a-much-cheeky-mango.md` for the
-full design rationale); every OS-specific piece sits behind the traits in
+Windows-first; every OS-specific piece sits behind the traits in
 `sherd-platform`, so a real Linux backend can be dropped in later without
 touching `sherd-core`, the daemon, the wire protocol, or any client.
 
