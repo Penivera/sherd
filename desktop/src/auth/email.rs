@@ -53,7 +53,7 @@ impl EmailAuthService {
             .is_ok()
     }
 
-    pub fn register(
+    pub async fn register(
         &self,
         email: &str,
         password: &str,
@@ -67,7 +67,7 @@ impl EmailAuthService {
         }
 
         let password_hash = Self::hash_password(password)?;
-        let user = match self.db.create_user_with_email(&email, &password_hash) {
+        let user = match self.db.create_user_with_email(&email, &password_hash).await {
             Ok(u) => u,
             Err(DbError::EmailAlreadyExists(_)) => return Err(EmailAuthError::EmailAlreadyExists),
             Err(e) => return Err(EmailAuthError::Db(e)),
@@ -77,7 +77,7 @@ impl EmailAuthService {
         Ok((user, token, exp_ms))
     }
 
-    pub fn login(
+    pub async fn login(
         &self,
         email: &str,
         password: &str,
@@ -85,7 +85,8 @@ impl EmailAuthService {
         let email = email.trim().to_lowercase();
         let user = self
             .db
-            .get_user_by_email(&email)?
+            .get_user_by_email(&email)
+            .await?
             .ok_or(EmailAuthError::InvalidCredentials)?;
 
         let hash = user

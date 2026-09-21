@@ -54,7 +54,7 @@ impl SolanaAuthService {
         }
     }
 
-    pub fn create_challenge(
+    pub async fn create_challenge(
         &self,
         wallet_address: &str,
     ) -> Result<SolanaChallengeResult, SolanaAuthError> {
@@ -81,7 +81,7 @@ impl SolanaAuthService {
         );
 
         self.db
-            .create_solana_challenge(wallet_address, &nonce, &message, &expires_at)?;
+            .create_solana_challenge(wallet_address, &nonce, &message, &expires_at).await?;
 
         Ok(SolanaChallengeResult {
             nonce,
@@ -90,7 +90,7 @@ impl SolanaAuthService {
         })
     }
 
-    pub fn verify(
+    pub async fn verify(
         &self,
         wallet_address: &str,
         nonce: &str,
@@ -109,7 +109,7 @@ impl SolanaAuthService {
         // Atomically consume challenge from DB (checks nonce, wallet, expiration, unconsumed)
         let challenge_message = self
             .db
-            .consume_solana_challenge(nonce, wallet_address, &now_iso)?
+            .consume_solana_challenge(nonce, wallet_address, &now_iso).await?
             .ok_or(SolanaAuthError::InvalidOrExpiredChallenge)?;
 
         // Verify Ed25519 signature over the server-stored challenge message
@@ -123,7 +123,7 @@ impl SolanaAuthService {
             wallet_address,
             None,
             None,
-        )?;
+        ).await?;
 
         let (token, exp_ms) = self.token_manager.create_token(&user.id)?;
         Ok((user, token, exp_ms))

@@ -3,7 +3,7 @@ use desktop::auth::wallet::SolanaSigner;
 
 #[tokio::test]
 async fn test_auth_manager_email_flow_and_session_persistence() {
-    let manager = AuthManager::in_memory_with_account("test_email_flow_account")
+    let manager = AuthManager::in_memory_with_account("test_email_flow_account").await
         .expect("Failed to initialize in-memory AuthManager");
     let _ = manager.logout().await;
 
@@ -51,7 +51,7 @@ async fn test_auth_manager_email_flow_and_session_persistence() {
 
 #[tokio::test]
 async fn test_auth_manager_solana_flow_and_session_persistence() {
-    let manager = AuthManager::in_memory_with_account("test_solana_flow_account")
+    let manager = AuthManager::in_memory_with_account("test_solana_flow_account").await
         .expect("Failed to initialize in-memory AuthManager");
     let _ = manager.logout().await;
 

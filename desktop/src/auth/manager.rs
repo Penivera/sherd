@@ -39,15 +39,10 @@ pub struct AuthManager {
     storage: SecureSessionStore,
 }
 
-impl Default for AuthManager {
-    fn default() -> Self {
-        Self::new().expect("Failed to initialize native AuthManager")
-    }
-}
 
 impl AuthManager {
-    pub fn new() -> Result<Self, AuthManagerError> {
-        let engine = Arc::new(AuthEngine::new_default()?);
+    pub async fn new() -> Result<Self, AuthManagerError> {
+        let engine = Arc::new(AuthEngine::new_default().await?);
         let storage = SecureSessionStore::new();
         Ok(Self { engine, storage })
     }
@@ -59,14 +54,14 @@ impl AuthManager {
         }
     }
 
-    pub fn in_memory() -> Result<Self, AuthManagerError> {
-        let engine = Arc::new(AuthEngine::new_in_memory()?);
+    pub async fn in_memory() -> Result<Self, AuthManagerError> {
+        let engine = Arc::new(AuthEngine::new_in_memory().await?);
         let storage = SecureSessionStore::in_memory();
         Ok(Self { engine, storage })
     }
 
-    pub fn in_memory_with_account(_account: &str) -> Result<Self, AuthManagerError> {
-        let engine = Arc::new(AuthEngine::new_in_memory()?);
+    pub async fn in_memory_with_account(_account: &str) -> Result<Self, AuthManagerError> {
+        let engine = Arc::new(AuthEngine::new_in_memory().await?);
         let storage = SecureSessionStore::in_memory();
         Ok(Self { engine, storage })
     }
@@ -97,7 +92,7 @@ impl AuthManager {
         password: &str,
     ) -> Result<PersistedSession, AuthManagerError> {
         info!("Executing native email login");
-        let session = self.engine.login_email(email, password)?;
+        let session = self.engine.login_email(email, password).await?;
         self.storage.save_session(&session)?;
         info!("Email login successful; session persisted");
         Ok(session)
@@ -109,7 +104,7 @@ impl AuthManager {
         password: &str,
     ) -> Result<PersistedSession, AuthManagerError> {
         info!("Executing native email registration");
-        let session = self.engine.register_email(email, password)?;
+        let session = self.engine.register_email(email, password).await?;
         self.storage.save_session(&session)?;
         info!("Email registration successful; session persisted");
         Ok(session)
@@ -129,14 +124,14 @@ impl AuthManager {
         info!("Executing native Solana authentication");
         let wallet_address = signer.public_key_b58();
 
-        let challenge = self.engine.create_solana_challenge(&wallet_address)?;
+        let challenge = self.engine.create_solana_challenge(&wallet_address).await?;
         let signature = signer.sign_message(&challenge.message)?;
 
         let session = self.engine.verify_solana_signature(
             &wallet_address,
             &challenge.nonce,
             &signature,
-        )?;
+        ).await?;
 
         self.storage.save_session(&session)?;
         info!("Solana authentication successful; session persisted");

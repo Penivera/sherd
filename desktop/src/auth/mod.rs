@@ -1,3 +1,4 @@
+pub mod entity;
 pub mod client;
 pub mod db;
 pub mod email;

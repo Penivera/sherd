@@ -54,22 +54,22 @@ impl AuthEngine {
         }
     }
 
-    pub fn new_in_memory() -> Result<Self, AuthEngineError> {
-        let db = AuthDb::open_in_memory()?;
+    pub async fn new_in_memory() -> Result<Self, AuthEngineError> {
+        let db = AuthDb::open_in_memory().await?;
         Ok(Self::new(db))
     }
 
-    pub fn new_default() -> Result<Self, AuthEngineError> {
-        let db = AuthDb::open_default()?;
+    pub async fn new_default() -> Result<Self, AuthEngineError> {
+        let db = AuthDb::open_default().await?;
         Ok(Self::new(db))
     }
 
-    pub fn register_email(
+    pub async fn register_email(
         &self,
         email: &str,
         password: &str,
     ) -> Result<PersistedSession, AuthEngineError> {
-        let (user, token, exp_ms) = self.email_service.register(email, password)?;
+        let (user, token, exp_ms) = self.email_service.register(email, password).await?;
         Ok(PersistedSession {
             access_token: token,
             user: UserProfile {
@@ -81,12 +81,12 @@ impl AuthEngine {
         })
     }
 
-    pub fn login_email(
+    pub async fn login_email(
         &self,
         email: &str,
         password: &str,
     ) -> Result<PersistedSession, AuthEngineError> {
-        let (user, token, exp_ms) = self.email_service.login(email, password)?;
+        let (user, token, exp_ms) = self.email_service.login(email, password).await?;
         Ok(PersistedSession {
             access_token: token,
             user: UserProfile {
@@ -98,21 +98,21 @@ impl AuthEngine {
         })
     }
 
-    pub fn create_solana_challenge(
+    pub async fn create_solana_challenge(
         &self,
         wallet_address: &str,
     ) -> Result<SolanaChallengeResult, AuthEngineError> {
-        Ok(self.solana_service.create_challenge(wallet_address)?)
+        Ok(self.solana_service.create_challenge(wallet_address).await?)
     }
 
-    pub fn verify_solana_signature(
+    pub async fn verify_solana_signature(
         &self,
         wallet_address: &str,
         nonce: &str,
         signature: &str,
     ) -> Result<PersistedSession, AuthEngineError> {
         let (user, token, exp_ms) =
-            self.solana_service.verify(wallet_address, nonce, signature)?;
+            self.solana_service.verify(wallet_address, nonce, signature).await?;
         Ok(PersistedSession {
             access_token: token,
             user: UserProfile {
@@ -140,8 +140,8 @@ impl AuthEngine {
         })
     }
 
-    pub fn get_user_by_id(&self, user_id: &str) -> Result<Option<UserProfile>, AuthEngineError> {
-        let user = self.db.get_user_by_id(user_id)?;
+    pub async fn get_user_by_id(&self, user_id: &str) -> Result<Option<UserProfile>, AuthEngineError> {
+        let user = self.db.get_user_by_id(user_id).await?;
         Ok(user.map(|u| UserProfile {
             id: u.id,
             email: u.email,

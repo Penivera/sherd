@@ -150,7 +150,7 @@ impl OAuthService {
             &provider_id,
             email.as_deref(),
             metadata.as_deref(),
-        )?;
+        ).await?;
 
         let (token, exp_ms) = self.token_manager.create_token(&user.id)?;
         Ok((user, token, exp_ms))

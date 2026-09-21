@@ -19,7 +19,7 @@ struct SherdApp {
 
 impl SherdApp {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        let auth_manager = Arc::new(AuthManager::default());
+        let auth_manager = Arc::new(tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(async { AuthManager::new().await.unwrap() })));
         let cached_session = auth_manager.load_cached_session();
 
         let focus_handle = cx.focus_handle();

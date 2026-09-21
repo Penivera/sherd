@@ -1,13 +1,19 @@
-use rusqlite::{params, Connection, OptionalExtension};
+use sea_orm::{
+    ActiveModelTrait, ColumnTrait, ConnectionTrait, Database, DatabaseConnection, EntityTrait,
+    QueryFilter, QueryOrder, Schema, Set, Statement,
+};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
 use thiserror::Error;
 use uuid::Uuid;
+
+use crate::auth::entity::{
+    auth_identity, oauth_exchange_code, solana_challenge, user,
+};
 
 #[derive(Debug, Error)]
 pub enum DbError {
     #[error("Database error: {0}")]
-    Sqlite(#[from] rusqlite::Error),
+    Orm(#[from] sea_orm::DbErr),
     #[error("Email already registered: {0}")]
     EmailAlreadyExists(String),
     #[error("User not found")]
@@ -24,28 +30,25 @@ pub struct UserRecord {
 
 #[derive(Clone)]
 pub struct AuthDb {
-    conn: Arc<Mutex<Connection>>,
+    pub conn: DatabaseConnection,
 }
 
 impl AuthDb {
-    pub fn open_in_memory() -> Result<Self, DbError> {
-        let conn = Connection::open_in_memory()?;
-        let db = Self {
-            conn: Arc::new(Mutex::new(conn)),
-        };
-        db.init_schema()?;
+    pub async fn open_in_memory() -> Result<Self, DbError> {
+        let conn = Database::connect("sqlite::memory:").await?;
+        let db = Self { conn };
+        db.init_schema().await?;
         Ok(db)
     }
 
-    pub fn open(path: &Path) -> Result<Self, DbError> {
+    pub async fn open(path: &Path) -> Result<Self, DbError> {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let conn = Connection::open(path)?;
-        let db = Self {
-            conn: Arc::new(Mutex::new(conn)),
-        };
-        db.init_schema()?;
+        let url = format!("sqlite://{}?mode=rwc", path.display());
+        let conn = Database::connect(&url).await?;
+        let db = Self { conn };
+        db.init_schema().await?;
         Ok(db)
     }
 
@@ -65,70 +68,32 @@ impl AuthDb {
         PathBuf::from("sherd_auth.db")
     }
 
-    pub fn open_default() -> Result<Self, DbError> {
-        Self::open(&Self::default_path())
+    pub async fn open_default() -> Result<Self, DbError> {
+        Self::open(&Self::default_path()).await
     }
 
-    fn init_schema(&self) -> Result<(), DbError> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute_batch(
-            "
-            PRAGMA foreign_keys = ON;
+    async fn init_schema(&self) -> Result<(), DbError> {
+        let backend = self.conn.get_database_backend();
+        let schema = Schema::new(backend);
 
-            CREATE TABLE IF NOT EXISTS users (
-                id TEXT PRIMARY KEY,
-                email TEXT UNIQUE,
-                password_hash TEXT,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS auth_identities (
-                id TEXT PRIMARY KEY,
-                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-                provider TEXT NOT NULL,
-                provider_account_id TEXT NOT NULL,
-                provider_metadata TEXT,
-                created_at TEXT NOT NULL,
-                UNIQUE (provider, provider_account_id)
-            );
-
-            CREATE TABLE IF NOT EXISTS solana_challenges (
-                id TEXT PRIMARY KEY,
-                wallet_address TEXT NOT NULL,
-                nonce TEXT NOT NULL UNIQUE,
-                message TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                expires_at TEXT NOT NULL,
-                consumed_at TEXT
-            );
-
-            CREATE TABLE IF NOT EXISTS oauth_exchange_codes (
-                id TEXT PRIMARY KEY,
-                code_hash TEXT NOT NULL UNIQUE,
-                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-                created_at TEXT NOT NULL,
-                expires_at TEXT NOT NULL,
-                consumed_at TEXT
-            );
-            ",
-        )?;
+        self.conn.execute(Statement::from_string(backend, "PRAGMA foreign_keys = ON;")).await?;
+        self.conn.execute(backend.build(&schema.create_table_from_entity(user::Entity))).await?;
+        self.conn.execute(backend.build(&schema.create_table_from_entity(auth_identity::Entity))).await?;
+        self.conn.execute(backend.build(&schema.create_table_from_entity(solana_challenge::Entity))).await?;
+        self.conn.execute(backend.build(&schema.create_table_from_entity(oauth_exchange_code::Entity))).await?;
+        
         Ok(())
     }
 
-    pub fn create_user_with_email(
+    pub async fn create_user_with_email(
         &self,
         email: &str,
         password_hash: &str,
     ) -> Result<UserRecord, DbError> {
-        let conn = self.conn.lock().unwrap();
-        let existing: Option<String> = conn
-            .query_row(
-                "SELECT id FROM users WHERE email = ?1",
-                params![email],
-                |row| row.get(0),
-            )
-            .optional()?;
+        let existing = user::Entity::find()
+            .filter(user::Column::Email.eq(email))
+            .one(&self.conn)
+            .await?;
 
         if existing.is_some() {
             return Err(DbError::EmailAlreadyExists(email.to_string()));
@@ -138,15 +103,26 @@ impl AuthDb {
         let identity_id = Uuid::new_v4().to_string();
         let now = chrono_now_iso8601();
 
-        conn.execute(
-            "INSERT INTO users (id, email, password_hash, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![user_id, email, password_hash, now, now],
-        )?;
+        user::ActiveModel {
+            id: Set(user_id.clone()),
+            email: Set(Some(email.to_string())),
+            password_hash: Set(Some(password_hash.to_string())),
+            created_at: Set(now.clone()),
+            updated_at: Set(now.clone()),
+        }
+        .insert(&self.conn)
+        .await?;
 
-        conn.execute(
-            "INSERT INTO auth_identities (id, user_id, provider, provider_account_id, created_at) VALUES (?1, ?2, 'email', ?3, ?4)",
-            params![identity_id, user_id, email, now],
-        )?;
+        auth_identity::ActiveModel {
+            id: Set(identity_id),
+            user_id: Set(user_id.clone()),
+            provider: Set("email".to_string()),
+            provider_account_id: Set(email.to_string()),
+            provider_metadata: Set(None),
+            created_at: Set(now),
+        }
+        .insert(&self.conn)
+        .await?;
 
         Ok(UserRecord {
             id: user_id,
@@ -156,95 +132,65 @@ impl AuthDb {
         })
     }
 
-    pub fn get_user_by_email(&self, email: &str) -> Result<Option<UserRecord>, DbError> {
-        let conn = self.conn.lock().unwrap();
-        let user = conn
-            .query_row(
-                "SELECT id, email, password_hash FROM users WHERE email = ?1",
-                params![email],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, Option<String>>(1)?,
-                        row.get::<_, Option<String>>(2)?,
-                    ))
-                },
-            )
-            .optional()?;
+    pub async fn get_user_by_email(&self, email: &str) -> Result<Option<UserRecord>, DbError> {
+        let user = user::Entity::find()
+            .filter(user::Column::Email.eq(email))
+            .one(&self.conn)
+            .await?;
 
-        let Some((id, email, password_hash)) = user else {
+        let Some(u) = user else {
             return Ok(None);
         };
 
-        let providers = self.load_providers_internal(&conn, &id)?;
+        let providers = self.load_providers_internal(&u.id).await?;
         Ok(Some(UserRecord {
-            id,
-            email,
-            password_hash,
+            id: u.id,
+            email: u.email,
+            password_hash: u.password_hash,
             providers,
         }))
     }
 
-    pub fn get_user_by_id(&self, user_id: &str) -> Result<Option<UserRecord>, DbError> {
-        let conn = self.conn.lock().unwrap();
-        let user = conn
-            .query_row(
-                "SELECT id, email, password_hash FROM users WHERE id = ?1",
-                params![user_id],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, Option<String>>(1)?,
-                        row.get::<_, Option<String>>(2)?,
-                    ))
-                },
-            )
-            .optional()?;
+    pub async fn get_user_by_id(&self, user_id: &str) -> Result<Option<UserRecord>, DbError> {
+        let user = user::Entity::find_by_id(user_id.to_string())
+            .one(&self.conn)
+            .await?;
 
-        let Some((id, email, password_hash)) = user else {
+        let Some(u) = user else {
             return Ok(None);
         };
 
-        let providers = self.load_providers_internal(&conn, &id)?;
+        let providers = self.load_providers_internal(&u.id).await?;
         Ok(Some(UserRecord {
-            id,
-            email,
-            password_hash,
+            id: u.id,
+            email: u.email,
+            password_hash: u.password_hash,
             providers,
         }))
     }
 
-    pub fn find_or_create_user_from_provider(
+    pub async fn find_or_create_user_from_provider(
         &self,
         provider: &str,
         provider_account_id: &str,
         email: Option<&str>,
         metadata: Option<&str>,
     ) -> Result<UserRecord, DbError> {
-        let conn = self.conn.lock().unwrap();
-
         // 1. Check if identity already exists
-        let existing_user_id: Option<String> = conn
-            .query_row(
-                "SELECT user_id FROM auth_identities WHERE provider = ?1 AND provider_account_id = ?2",
-                params![provider, provider_account_id],
-                |row| row.get(0),
-            )
-            .optional()?;
+        let existing_identity = auth_identity::Entity::find()
+            .filter(auth_identity::Column::Provider.eq(provider))
+            .filter(auth_identity::Column::ProviderAccountId.eq(provider_account_id))
+            .one(&self.conn)
+            .await?;
 
-        if let Some(user_id) = existing_user_id {
-            let providers = self.load_providers_internal(&conn, &user_id)?;
-            let user_email: Option<String> = conn
-                .query_row(
-                    "SELECT email FROM users WHERE id = ?1",
-                    params![user_id],
-                    |row| row.get(0),
-                )
-                .optional()?;
-
+        if let Some(identity) = existing_identity {
+            let user_id = identity.user_id;
+            let providers = self.load_providers_internal(&user_id).await?;
+            let user = user::Entity::find_by_id(user_id.clone()).one(&self.conn).await?;
+            
             return Ok(UserRecord {
                 id: user_id,
-                email: user_email,
+                email: user.and_then(|u| u.email),
                 password_hash: None,
                 providers,
             });
@@ -253,13 +199,13 @@ impl AuthDb {
         // 2. Check if user with this email already exists
         let mut target_user_id = None;
         if let Some(em) = email {
-            target_user_id = conn
-                .query_row(
-                    "SELECT id FROM users WHERE email = ?1",
-                    params![em],
-                    |row| row.get(0),
-                )
-                .optional()?;
+            let u = user::Entity::find()
+                .filter(user::Column::Email.eq(em))
+                .one(&self.conn)
+                .await?;
+            if let Some(u) = u {
+                target_user_id = Some(u.id);
+            }
         }
 
         let now = chrono_now_iso8601();
@@ -267,21 +213,32 @@ impl AuthDb {
             uid
         } else {
             let new_uid = Uuid::new_v4().to_string();
-            conn.execute(
-                "INSERT INTO users (id, email, password_hash, created_at, updated_at) VALUES (?1, ?2, NULL, ?3, ?4)",
-                params![new_uid, email, now, now],
-            )?;
+            user::ActiveModel {
+                id: Set(new_uid.clone()),
+                email: Set(email.map(|s| s.to_string())),
+                password_hash: Set(None),
+                created_at: Set(now.clone()),
+                updated_at: Set(now.clone()),
+            }
+            .insert(&self.conn)
+            .await?;
             new_uid
         };
 
         // Link new identity
         let identity_id = Uuid::new_v4().to_string();
-        conn.execute(
-            "INSERT INTO auth_identities (id, user_id, provider, provider_account_id, provider_metadata, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![identity_id, user_id, provider, provider_account_id, metadata, now],
-        )?;
+        auth_identity::ActiveModel {
+            id: Set(identity_id),
+            user_id: Set(user_id.clone()),
+            provider: Set(provider.to_string()),
+            provider_account_id: Set(provider_account_id.to_string()),
+            provider_metadata: Set(metadata.map(|s| s.to_string())),
+            created_at: Set(now),
+        }
+        .insert(&self.conn)
+        .await?;
 
-        let providers = self.load_providers_internal(&conn, &user_id)?;
+        let providers = self.load_providers_internal(&user_id).await?;
         Ok(UserRecord {
             id: user_id,
             email: email.map(|s| s.to_string()),
@@ -290,119 +247,139 @@ impl AuthDb {
         })
     }
 
-    pub fn create_solana_challenge(
+    pub async fn create_solana_challenge(
         &self,
         wallet_address: &str,
         nonce: &str,
         message: &str,
         expires_at: &str,
     ) -> Result<(), DbError> {
-        let conn = self.conn.lock().unwrap();
         let id = Uuid::new_v4().to_string();
         let now = chrono_now_iso8601();
 
-        conn.execute(
-            "INSERT INTO solana_challenges (id, wallet_address, nonce, message, created_at, expires_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![id, wallet_address, nonce, message, now, expires_at],
-        )?;
+        solana_challenge::ActiveModel {
+            id: Set(id),
+            wallet_address: Set(wallet_address.to_string()),
+            nonce: Set(nonce.to_string()),
+            message: Set(message.to_string()),
+            created_at: Set(now),
+            expires_at: Set(expires_at.to_string()),
+            consumed_at: Set(None),
+        }
+        .insert(&self.conn)
+        .await?;
         Ok(())
     }
 
-    pub fn consume_solana_challenge(
+    pub async fn consume_solana_challenge(
         &self,
         nonce: &str,
         wallet_address: &str,
         now: &str,
     ) -> Result<Option<String>, DbError> {
-        let conn = self.conn.lock().unwrap();
+        let update_result = solana_challenge::Entity::update_many()
+            .col_expr(solana_challenge::Column::ConsumedAt, sea_orm::sea_query::Expr::value(now.to_string()))
+            .filter(solana_challenge::Column::Nonce.eq(nonce))
+            .filter(solana_challenge::Column::WalletAddress.eq(wallet_address))
+            .filter(solana_challenge::Column::ConsumedAt.is_null())
+            .filter(solana_challenge::Column::ExpiresAt.gt(now))
+            .exec(&self.conn)
+            .await?;
 
-        // Atomically update consumed_at only if unconsumed, unexpired, and matching wallet
-        let rows_affected = conn.execute(
-            "UPDATE solana_challenges SET consumed_at = ?1
-             WHERE nonce = ?2 AND wallet_address = ?3 AND consumed_at IS NULL AND expires_at > ?1",
-            params![now, nonce, wallet_address],
-        )?;
-
-        if rows_affected != 1 {
+        if update_result.rows_affected != 1 {
             return Ok(None);
         }
 
-        let message: String = conn.query_row(
-            "SELECT message FROM solana_challenges WHERE nonce = ?1",
-            params![nonce],
-            |row| row.get(0),
-        )?;
+        let challenge = solana_challenge::Entity::find()
+            .filter(solana_challenge::Column::Nonce.eq(nonce))
+            .one(&self.conn)
+            .await?;
 
-        Ok(Some(message))
+        Ok(challenge.map(|c| c.message))
     }
 
-    pub fn create_oauth_exchange_code(
+    pub async fn create_oauth_exchange_code(
         &self,
         user_id: &str,
         code_hash: &str,
         expires_at: &str,
     ) -> Result<(), DbError> {
-        let conn = self.conn.lock().unwrap();
         let id = Uuid::new_v4().to_string();
         let now = chrono_now_iso8601();
 
-        conn.execute(
-            "INSERT INTO oauth_exchange_codes (id, code_hash, user_id, created_at, expires_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![id, code_hash, user_id, now, expires_at],
-        )?;
+        oauth_exchange_code::ActiveModel {
+            id: Set(id),
+            code_hash: Set(code_hash.to_string()),
+            user_id: Set(user_id.to_string()),
+            created_at: Set(now),
+            expires_at: Set(expires_at.to_string()),
+            consumed_at: Set(None),
+        }
+        .insert(&self.conn)
+        .await?;
         Ok(())
     }
 
-    pub fn consume_oauth_exchange_code(
+    pub async fn consume_oauth_exchange_code(
         &self,
         code_hash: &str,
         now: &str,
     ) -> Result<Option<UserRecord>, DbError> {
-        let conn = self.conn.lock().unwrap();
+        let update_result = oauth_exchange_code::Entity::update_many()
+            .col_expr(oauth_exchange_code::Column::ConsumedAt, sea_orm::sea_query::Expr::value(now.to_string()))
+            .filter(oauth_exchange_code::Column::CodeHash.eq(code_hash))
+            .filter(oauth_exchange_code::Column::ConsumedAt.is_null())
+            .filter(oauth_exchange_code::Column::ExpiresAt.gt(now))
+            .exec(&self.conn)
+            .await?;
 
-        let rows_affected = conn.execute(
-            "UPDATE oauth_exchange_codes SET consumed_at = ?1
-             WHERE code_hash = ?2 AND consumed_at IS NULL AND expires_at > ?1",
-            params![now, code_hash],
-        )?;
-
-        if rows_affected != 1 {
+        if update_result.rows_affected != 1 {
             return Ok(None);
         }
 
-        let user_id: String = conn.query_row(
-            "SELECT user_id FROM oauth_exchange_codes WHERE code_hash = ?1",
-            params![code_hash],
-            |row| row.get(0),
-        )?;
+        let code = oauth_exchange_code::Entity::find()
+            .filter(oauth_exchange_code::Column::CodeHash.eq(code_hash))
+            .one(&self.conn)
+            .await?;
+            
+        let Some(code) = code else {
+            return Ok(None);
+        };
 
-        let (id, email): (String, Option<String>) = conn.query_row(
-            "SELECT id, email FROM users WHERE id = ?1",
-            params![user_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )?;
+        let user = user::Entity::find_by_id(code.user_id.clone())
+            .one(&self.conn)
+            .await?;
+            
+        let Some(u) = user else {
+            return Ok(None);
+        };
 
-        let providers = self.load_providers_internal(&conn, &id)?;
+        let providers = self.load_providers_internal(&u.id).await?;
         Ok(Some(UserRecord {
-            id,
-            email,
+            id: u.id,
+            email: u.email,
             password_hash: None,
             providers,
         }))
     }
 
-    fn load_providers_internal(
+    async fn load_providers_internal(
         &self,
-        conn: &Connection,
         user_id: &str,
     ) -> Result<Vec<String>, DbError> {
-        let mut stmt = conn.prepare(
-            "SELECT DISTINCT provider FROM auth_identities WHERE user_id = ?1 ORDER BY provider",
-        )?;
-        let rows = stmt.query_map(params![user_id], |row| row.get(0))?;
         let mut providers = Vec::new();
-        for p in rows {
-            providers.push(p?);
+        let rows = auth_identity::Entity::find()
+            .filter(auth_identity::Column::UserId.eq(user_id))
+            .order_by_asc(auth_identity::Column::Provider)
+            .all(&self.conn)
+            .await?;
+            
+        let mut last_provider = None;
+        for row in rows {
+            if last_provider != Some(row.provider.clone()) {
+                last_provider = Some(row.provider.clone());
+                providers.push(row.provider);
+            }
         }
         Ok(providers)
     }

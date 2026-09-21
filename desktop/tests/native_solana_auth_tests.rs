@@ -3,9 +3,9 @@ use desktop::auth::solana::{SolanaAuthError, SolanaAuthService};
 use desktop::auth::token::TokenManager;
 use desktop::auth::wallet::SolanaSigner;
 
-#[test]
-fn test_solana_challenge_creation_and_successful_verification() {
-    let db = AuthDb::open_in_memory().expect("Failed to open in-memory db");
+#[tokio::test]
+async fn test_solana_challenge_creation_and_successful_verification() {
+    let db = AuthDb::open_in_memory().await.expect("Failed to open in-memory db");
     let service = SolanaAuthService::new(db, TokenManager::default());
 
     let signer = SolanaSigner::new_ephemeral();
@@ -13,7 +13,7 @@ fn test_solana_challenge_creation_and_successful_verification() {
 
     // 1. Issue challenge
     let challenge = service
-        .create_challenge(&wallet_address)
+        .create_challenge(&wallet_address).await
         .expect("Challenge creation should succeed");
 
     assert!(!challenge.nonce.is_empty());
@@ -27,7 +27,7 @@ fn test_solana_challenge_creation_and_successful_verification() {
 
     // 3. Verify signature
     let (user, token, exp_ms) = service
-        .verify(&wallet_address, &challenge.nonce, &signature)
+        .verify(&wallet_address, &challenge.nonce, &signature).await
         .expect("Signature verification should succeed");
 
     assert_eq!(user.providers, vec!["solana".to_string()]);
@@ -35,23 +35,23 @@ fn test_solana_challenge_creation_and_successful_verification() {
     assert!(exp_ms > 0);
 
     // 4. Replay attack: verifying again must fail
-    let replay_err = service.verify(&wallet_address, &challenge.nonce, &signature);
+    let replay_err = service.verify(&wallet_address, &challenge.nonce, &signature).await;
     assert!(matches!(
         replay_err,
         Err(SolanaAuthError::InvalidOrExpiredChallenge)
     ));
 }
 
-#[test]
-fn test_solana_tampered_signature_rejection() {
-    let db = AuthDb::open_in_memory().expect("Failed to open in-memory db");
+#[tokio::test]
+async fn test_solana_tampered_signature_rejection() {
+    let db = AuthDb::open_in_memory().await.expect("Failed to open in-memory db");
     let service = SolanaAuthService::new(db, TokenManager::default());
 
     let signer = SolanaSigner::new_ephemeral();
     let wallet_address = signer.public_key_b58();
 
     let challenge = service
-        .create_challenge(&wallet_address)
+        .create_challenge(&wallet_address).await
         .expect("Challenge creation should succeed");
 
     // Sign a DIFFERENT message (e.g. attacker attempting to replay another signature)
@@ -59,16 +59,16 @@ fn test_solana_tampered_signature_rejection() {
         .sign_message("Forged message text")
         .expect("Signing should succeed");
 
-    let verify_err = service.verify(&wallet_address, &challenge.nonce, &bad_signature);
+    let verify_err = service.verify(&wallet_address, &challenge.nonce, &bad_signature).await;
     assert!(matches!(verify_err, Err(SolanaAuthError::InvalidSignature)));
 }
 
-#[test]
-fn test_solana_invalid_wallet_rejection() {
-    let db = AuthDb::open_in_memory().expect("Failed to open in-memory db");
+#[tokio::test]
+async fn test_solana_invalid_wallet_rejection() {
+    let db = AuthDb::open_in_memory().await.expect("Failed to open in-memory db");
     let service = SolanaAuthService::new(db, TokenManager::default());
 
     let bad_wallet = "not_a_valid_solana_wallet";
-    let err = service.create_challenge(bad_wallet);
+    let err = service.create_challenge(bad_wallet).await;
     assert!(matches!(err, Err(SolanaAuthError::InvalidWalletAddress)));
 }

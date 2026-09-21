@@ -1,0 +1,13 @@
+[package]
+name = "mesh"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+wire.workspace = true
+tokio.workspace = true
+ed25519-dalek.workspace = true
+rand.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
