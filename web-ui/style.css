@@ -1,0 +1,59 @@
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&display=swap');
+
+:root {
+  --bg: #0F0C08;
+  --text-muted: #8F8066;
+  --accent: #E3A144;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  height: 100%;
+  background: var(--bg);
+  overflow: hidden;
+}
+
+.screen-frame {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  background: var(--bg);
+  background-image:
+    linear-gradient(rgba(227,161,68,0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(227,161,68,0.03) 1px, transparent 1px);
+  background-size: 24px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: default;
+}
+
+.screen-frame canvas {
+  max-width: 100%;
+  max-height: 100%;
+}
+
+.placeholder {
+  text-align: center;
+  color: var(--text-muted);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 13px;
+  pointer-events: none;
+}
+
+/* Small, unobtrusive connection indicator, bottom-right corner */
+.status-dot {
+  position: absolute;
+  bottom: 14px;
+  right: 14px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  transition: background 0.2s ease, box-shadow 0.2s ease;
+}
+.status-dot.connected {
+  background: var(--accent);
+  box-shadow: 0 0 6px rgba(227,161,68,0.7);
+}
