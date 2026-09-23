@@ -1,14 +1,12 @@
-//! Domain model for the SMS-like layer. Nothing populates these yet this
-//! pass (see the plan's "Deferred" section — mesh relay is next) but the
-//! schema is settled now so `storage.rs` doesn't have to change shape later.
+//! Domain model for the SMS-like layer. Populated by `service.rs`'s mailbox
+//! (see `mailbox.rs`) as messages are sent and received.
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Contact {
     pub id: i64,
     pub display_name: String,
-    /// Stable identifier for the other device. Opaque for now; will likely
-    /// become a persisted per-install identity once the mesh transport
-    /// lands and devices need to recognize each other across reconnects.
+    /// Stable identifier for the other device: its Ed25519 public key,
+    /// hex-encoded. See `identity::DeviceIdentity`.
     pub device_id: String,
 }
 
@@ -37,17 +35,39 @@ impl MessageStatus {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MessageDirection {
+    Outgoing,
+    Incoming,
+}
+
+impl MessageDirection {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MessageDirection::Outgoing => "outgoing",
+            MessageDirection::Incoming => "incoming",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Message {
     pub id: i64,
     pub conversation_id: i64,
-    pub body: String,
+    pub direction: MessageDirection,
+    /// `None` for a file-only message.
+    pub body: Option<String>,
+    pub attachment_name: Option<String>,
+    pub attachment_path: Option<String>,
     pub status: MessageStatus,
     pub created_at_unix: i64,
 }
 
-/// A record of having seen/joined a particular contact's network — the
-/// beginning of "who's nearby" bookkeeping for the mesh milestone.
+/// A record of having seen/joined a particular contact's network — history
+/// of "who's nearby, and on which SSID," kept alongside the live in-memory
+/// `mailbox::PeerRegistry` used for actually addressing a currently-online
+/// peer. Not yet written to (see `service.rs`) -- a fuller "who have I seen
+/// before, even offline" view is a natural follow-up.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeerLink {
     pub id: i64,

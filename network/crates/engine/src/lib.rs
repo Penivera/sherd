@@ -5,10 +5,12 @@
 
 pub mod config;
 pub mod entity;
+pub mod identity;
+pub mod mailbox;
 pub mod models;
 pub mod service;
 pub mod storage;
 
 pub use config::SherdConfig;
-pub use service::{FeatureNotReady, SherdService};
+pub use service::{InitError, SherdService};
 pub use storage::Storage;

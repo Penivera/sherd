@@ -33,13 +33,26 @@ pub enum Request {
     HotspotStop,
     StationConnect { ssid: String, key: String },
     StationDisconnect,
-    /// Reserved shape for the next milestone (mesh relay). The daemon
-    /// accepts this today and answers with
-    /// [`Response::NotYetImplemented`] so the protocol surface won't
-    /// change when messaging actually lands.
+    /// This device's own persistent identity (a stable ID that survives
+    /// restarts, unlike the hotspot SSID's random suffix).
+    Identity,
+    /// Other sherd devices currently reachable on the same Wi-Fi network,
+    /// as heard from their discovery-beacon broadcasts.
+    Peers,
+    /// Send a text message to a device, addressed by its `device_id` (see
+    /// [`Request::Identity`]/[`Request::Peers`]). The target must currently
+    /// be reachable (in the `Peers` list) -- there is no offline queueing
+    /// yet, so this fails immediately if the device isn't on the network
+    /// right now.
     SendMessage { to: String, body: String },
-    /// Reserved shape for file transfer, same status as `SendMessage`.
+    /// Send a file to a device, same addressing and reachability
+    /// requirement as `SendMessage`. `path` is a local file path; the
+    /// whole file is read into memory and sent in one go, so this isn't
+    /// meant for huge files yet.
     SendFile { to: String, path: String },
+    /// Full message history with one device, regardless of whether it's
+    /// currently reachable.
+    History { device_id: String },
 }
 
 /// The daemon's reply to a [`Request`]. Sent as the direct response to the
@@ -53,9 +66,39 @@ pub enum Response {
     Status(StatusReport),
     Ok,
     Error { message: String },
-    /// The request was understood but its feature isn't built yet
-    /// (currently `SendMessage`/`SendFile` — see the mesh-relay milestone).
+    /// The request was understood but its feature isn't built yet.
     NotYetImplemented { feature: String },
+    /// Answer to [`Request::Identity`]: this device's own persistent ID.
+    Identity { device_id: String, display_name: String },
+    /// Answer to [`Request::Peers`]: other sherd devices currently
+    /// reachable on the same Wi-Fi network.
+    Peers(Vec<PeerSummary>),
+    /// Answer to [`Request::History`]: full message history with one
+    /// contact, oldest first.
+    History(Vec<HistoryEntry>),
+}
+
+/// One past message, sent or received, with a contact.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HistoryEntry {
+    /// "outgoing" or "incoming".
+    pub direction: String,
+    pub body: Option<String>,
+    pub attachment_name: Option<String>,
+    pub attachment_path: Option<String>,
+    pub status: String,
+    pub created_at_unix: i64,
+}
+
+/// One other sherd device this daemon currently knows how to reach, learned
+/// from its discovery-beacon broadcasts on the local Wi-Fi network.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PeerSummary {
+    pub device_id: String,
+    pub display_name: String,
+    /// `ip:port` this device last announced itself on.
+    pub addr: String,
+    pub last_seen_unix: i64,
 }
 
 /// What the auto-connect flow ended up doing.
@@ -97,6 +140,24 @@ pub enum Event {
     /// own startup attempt), so a client that wasn't the one asking still
     /// learns the outcome.
     AutoResult(AutoOutcome),
+    /// A text message and/or file arrived from another sherd device.
+    MessageReceived {
+        from_device_id: String,
+        from_display_name: String,
+        body: Option<String>,
+        attachment: Option<ReceivedAttachment>,
+    },
+}
+
+/// A file received alongside (or instead of) a text message, already saved
+/// to local disk by the time this event fires.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReceivedAttachment {
+    /// Original filename as the sender sent it.
+    pub name: String,
+    /// Where this daemon saved it locally.
+    pub path: String,
+    pub size_bytes: u64,
 }
 
 /// Everything the daemon can write to a client connection: either the

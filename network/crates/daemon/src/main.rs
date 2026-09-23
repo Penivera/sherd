@@ -22,9 +22,14 @@ async fn main() -> anyhow::Result<()> {
     let config = SherdConfig::default();
     let device_ssid = config.device_ssid.clone();
     let watchdog_interval = config.watchdog_interval;
-    let service = Arc::new(SherdService::new(backend, config));
+    let service = Arc::new(SherdService::new(backend, config).await?);
 
-    tracing::info!(%device_ssid, "starting sherd daemon");
+    tracing::info!(
+        %device_ssid,
+        device_id = service.device_id(),
+        display_name = service.display_name(),
+        "starting sherd daemon"
+    );
 
     // Best-effort: get connected (join or host) right away, then keep
     // watching the link for as long as the daemon runs so a dropped
@@ -33,6 +38,13 @@ async fn main() -> anyhow::Result<()> {
     {
         let service = Arc::clone(&service);
         tokio::spawn(supervise(service, watchdog_interval));
+    }
+
+    // Broadcast this device's presence and accept incoming
+    // messages/files for as long as the daemon runs.
+    {
+        let service = Arc::clone(&service);
+        tokio::spawn(service.run_messaging());
     }
 
     let name = protocol::SOCKET_NAME.to_ns_name::<GenericNamespaced>()?;

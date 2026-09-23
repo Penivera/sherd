@@ -28,6 +28,10 @@ pub struct SherdConfig {
     /// network if possible, hosting its own otherwise. See
     /// `sherd_daemon::supervise`.
     pub watchdog_interval: Duration,
+    /// Human-readable name this device introduces itself with to other
+    /// sherd devices (see `identity::DeviceIdentity`) -- what shows up as
+    /// the sender in a received message, not a login/account name.
+    pub display_name: String,
 }
 
 impl Default for SherdConfig {
@@ -39,8 +43,24 @@ impl Default for SherdConfig {
             shared_key: "sherd-mesh-default".to_string(),
             device_ssid,
             watchdog_interval: Duration::from_secs(15),
+            display_name: default_display_name(),
         }
     }
+}
+
+/// Falls back through the environment variables Windows/Linux/macOS
+/// actually set for "this machine's name" before giving up on a generic
+/// placeholder -- there's no crate-free portable way to ask the OS
+/// directly, and pulling one in just for a friendly default isn't worth it.
+fn default_display_name() -> String {
+    for var in ["COMPUTERNAME", "HOSTNAME"] {
+        if let Ok(name) = std::env::var(var) {
+            if !name.trim().is_empty() {
+                return name;
+            }
+        }
+    }
+    "sherd-device".to_string()
 }
 
 /// A short, human-friendly, per-process-random suffix for this device's

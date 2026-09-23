@@ -13,7 +13,7 @@
 use std::sync::Arc;
 
 use interprocess::local_socket::tokio::Stream;
-use engine::{FeatureNotReady, SherdService};
+use engine::SherdService;
 use protocol::{decode_line, encode_line, Request, Response, ServerMessage};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
@@ -104,14 +104,23 @@ async fn dispatch(service: &SherdService, request: Request) -> Response {
             unit_ok_or_error(service.station_connect(&ssid, &key).await)
         }
         Request::StationDisconnect => unit_ok_or_error(service.station_disconnect().await),
-        Request::SendMessage { to, body } => {
-            let FeatureNotReady(feature) = service.send_message(&to, &body);
-            Response::NotYetImplemented { feature: feature.to_string() }
-        }
-        Request::SendFile { to, path } => {
-            let FeatureNotReady(feature) = service.send_file(&to, &path);
-            Response::NotYetImplemented { feature: feature.to_string() }
-        }
+        Request::Identity => Response::Identity {
+            device_id: service.device_id().to_string(),
+            display_name: service.display_name().to_string(),
+        },
+        Request::Peers => Response::Peers(service.list_peers()),
+        Request::SendMessage { to, body } => match service.send_message(&to, &body).await {
+            Ok(()) => Response::Ok,
+            Err(e) => Response::Error { message: e.to_string() },
+        },
+        Request::SendFile { to, path } => match service.send_file(&to, &path).await {
+            Ok(()) => Response::Ok,
+            Err(e) => Response::Error { message: e.to_string() },
+        },
+        Request::History { device_id } => match service.history(&device_id).await {
+            Ok(entries) => Response::History(entries),
+            Err(e) => Response::Error { message: format!("could not read history: {e}") },
+        },
     }
 }
 
