@@ -15,7 +15,7 @@
 
 use async_trait::async_trait;
 use platform::{HotspotController, LinkState, LinkStatus, PlatformError, PlatformResult};
-use windows::engine::HSTRING;
+use windows::core::HSTRING;
 use windows::Networking::Connectivity::NetworkInformation;
 use windows::Networking::NetworkOperators::{
     NetworkOperatorTetheringManager, NetworkOperatorTetheringOperationResult,
