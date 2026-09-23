@@ -92,4 +92,8 @@ impl HotspotController for CompositeHotspotController {
     async fn upstream_name(&self) -> Option<String> {
         self.winrt.upstream_name().await
     }
+
+    async fn configured(&self) -> Option<(String, String)> {
+        self.winrt.configured().await
+    }
 }

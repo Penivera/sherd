@@ -20,6 +20,7 @@ mod composite;
 mod hotspot;
 mod interfaces;
 mod netsh;
+mod radio;
 mod station;
 mod winrt_capability;
 mod winrt_hotspot;

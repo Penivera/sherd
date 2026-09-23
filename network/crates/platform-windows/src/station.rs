@@ -10,8 +10,25 @@ pub struct NetshStationConnector;
 #[async_trait]
 impl StationConnector for NetshStationConnector {
     async fn scan(&self) -> PlatformResult<Vec<ScanResult>> {
-        let out = run_netsh(&["wlan", "show", "networks"]).await?;
+        // `netsh` only reports Windows' cached list, which can be a minute
+        // or more stale while connected. Ask for a fresh scan so a
+        // newly-appeared Sherd network (or one that's now closer) shows up
+        // by the next check. Best-effort: it runs in the background, and
+        // the cached list below is still used this time.
+        let _ = tokio::task::spawn_blocking(crate::interfaces::request_fresh_scan).await;
+
+        // `mode=bssid` adds each access point's signal strength, which is
+        // how the daemon picks the *nearest* Sherd network.
+        let out = run_netsh(&["wlan", "show", "networks", "mode=bssid"]).await?;
         Ok(parse_scan(&out.stdout))
+    }
+
+    async fn is_radio_on(&self) -> Option<bool> {
+        crate::radio::is_wifi_on().await
+    }
+
+    async fn turn_radio_on(&self) -> PlatformResult<()> {
+        crate::radio::turn_wifi_on().await
     }
 
     async fn connect(&self, ssid: &str, key: &str) -> PlatformResult<()> {
@@ -70,28 +87,29 @@ fn classify_connect_failure(stdout: &str, stderr: &str) -> PlatformError {
     }
 }
 
-/// `netsh wlan show networks` prints entries like `SSID 1 : MyNetwork`.
-/// Signal strength isn't requested (`mode=Bssid` would add it) to keep the
-/// output — and this parser — locale-simpler; see the crate-level doc
-/// comment about the same tradeoff for capability detection.
+/// `netsh wlan show networks mode=bssid` prints each network as an
+/// `SSID 1 : MyNetwork` line followed by one block per access point, each
+/// with a `Signal : 85%` line. A network's signal is its strongest access
+/// point's. (Same English-locale caveat as the rest of this crate.)
 fn parse_scan(stdout: &str) -> Vec<ScanResult> {
-    stdout
-        .lines()
-        .filter_map(|line| {
-            let trimmed = line.trim_start();
-            if !trimmed.to_lowercase().starts_with("ssid") {
-                return None;
+    let mut results: Vec<ScanResult> = Vec::new();
+    for line in stdout.lines() {
+        let trimmed = line.trim_start();
+        let lower = trimmed.to_lowercase();
+        if lower.starts_with("ssid") {
+            let Some(ssid) = trimmed.splitn(2, ':').nth(1).map(str::trim) else { continue };
+            if !ssid.is_empty() {
+                results.push(ScanResult { ssid: ssid.to_string(), signal_percent: None });
             }
-            let ssid = trimmed.splitn(2, ':').nth(1)?.trim();
-            if ssid.is_empty() {
-                return None;
+        } else if lower.starts_with("signal") {
+            let signal = value_after_colon(trimmed)
+                .and_then(|v| v.trim_end_matches('%').trim().parse::<u8>().ok());
+            if let (Some(signal), Some(last)) = (signal, results.last_mut()) {
+                last.signal_percent = Some(last.signal_percent.map_or(signal, |s| s.max(signal)));
             }
-            Some(ScanResult {
-                ssid: ssid.to_string(),
-                signal_percent: None,
-            })
-        })
-        .collect()
+        }
+    }
+    results
 }
 
 fn parse_interface_status(stdout: &str) -> LinkStatus {
@@ -211,6 +229,27 @@ SSID 2 : SomeoneElsesWifi
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].ssid, "Sherd-a1b2");
         assert_eq!(results[1].ssid, "SomeoneElsesWifi");
+    }
+
+    #[test]
+    fn takes_strongest_access_point_signal() {
+        let sample = "\
+SSID 1 : Sherd-1B13A2
+    Network type            : Infrastructure
+    BSSID 1                 : 12:34:56:78:9a:bc
+         Signal             : 40%
+    BSSID 2                 : 12:34:56:78:9a:bd
+         Signal             : 85%
+
+SSID 2 : Home
+    BSSID 1                 : aa:bb:cc:dd:ee:ff
+         Signal             : 60%
+";
+        let results = parse_scan(sample);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].ssid, "Sherd-1B13A2");
+        assert_eq!(results[0].signal_percent, Some(85));
+        assert_eq!(results[1].signal_percent, Some(60));
     }
 
     #[test]

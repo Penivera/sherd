@@ -130,6 +130,13 @@ pub trait HotspotController: Send + Sync {
     async fn upstream_name(&self) -> Option<String> {
         None
     }
+    /// The name and password the hotspot is currently configured with,
+    /// when the backend can read them -- so the daemon can notice someone
+    /// renaming it (or changing its password) and put it back, since
+    /// either change cuts every other device off from it.
+    async fn configured(&self) -> Option<(String, String)> {
+        None
+    }
 }
 
 impl PlatformError {
@@ -163,6 +170,14 @@ pub trait StationConnector: Send + Sync {
     async fn connect(&self, ssid: &str, key: &str) -> PlatformResult<()>;
     async fn disconnect(&self) -> PlatformResult<()>;
     async fn status(&self) -> PlatformResult<LinkStatus>;
+    /// Whether the Wi-Fi radio is switched on, when the backend can tell.
+    async fn is_radio_on(&self) -> Option<bool> {
+        None
+    }
+    /// Switch the Wi-Fi radio on (e.g. after someone turned Wi-Fi off).
+    async fn turn_radio_on(&self) -> PlatformResult<()> {
+        Err(PlatformError::NotImplemented)
+    }
 }
 
 /// Lists the Wi-Fi interfaces this machine has. Mostly diagnostic today;
@@ -170,6 +185,15 @@ pub trait StationConnector: Send + Sync {
 #[async_trait]
 pub trait InterfaceEnumerator: Send + Sync {
     async fn list(&self) -> PlatformResult<Vec<InterfaceInfo>>;
+    /// The broadcast address of every active IPv4 network this device is
+    /// on (e.g. `192.168.137.255` for its own hotspot's subnet), so
+    /// discovery can announce on all of them. A plain `255.255.255.255`
+    /// broadcast only leaves through one interface, which on a device that
+    /// both hosts a hotspot and is on another network means devices on one
+    /// of the two never hear it.
+    async fn ipv4_broadcast_addresses(&self) -> Vec<std::net::Ipv4Addr> {
+        Vec::new()
+    }
 }
 
 /// Bundles the four traits a platform backend must provide. `sherd-core`

@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use platform::{CapabilityLevel, CapabilityReport, LinkState, LinkStatus, PlatformBackend};
+use platform::{CapabilityLevel, CapabilityReport, LinkState, LinkStatus, PlatformBackend, ScanResult};
 use protocol::{AutoOutcome, Event, PeerSummary, ReceivedAttachment, StatusReport};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::broadcast;
@@ -37,6 +37,54 @@ const JOIN_TIMEOUT: Duration = Duration::from_secs(20);
 /// moment this matters is right after our own upstream drops, when those
 /// clients may have briefly gone quiet too.
 const DOWNSTREAM_MEMORY: Duration = Duration::from_secs(300);
+
+/// Move to a different Sherd network only when it's this many signal
+/// points stronger than the current one. Without a margin, two networks at
+/// similar strength would have the device hopping back and forth -- and
+/// every hop briefly cuts off everything connected through it.
+const ROAM_MARGIN: u8 = 30;
+
+/// When two devices first come into range of each other, both would
+/// otherwise try to join the other's hotspot at the same moment -- a loop.
+/// So the device with the lower ID holds back this long, while the other
+/// joins first. By the time this runs out, the lower-ID device has heard
+/// that the other is now connected through it, so won't join it at all.
+/// Long enough for a watchdog check, a Wi-Fi connection, and a few
+/// discovery broadcasts.
+const JOIN_GRACE: Duration = Duration::from_secs(45);
+
+/// How long to give Wi-Fi to come back after switching the radio on,
+/// before scanning.
+const RADIO_WARMUP: Duration = Duration::from_secs(4);
+
+/// What the station (Wi-Fi client) side should do, per the "always be
+/// connected to the nearest Sherd network" policy. See
+/// [`SherdService::plan_station`].
+#[derive(Debug)]
+enum StationPlan {
+    /// Connected to a suitable Sherd network; leave it.
+    Stay(String),
+    /// No usable Sherd network in range: nothing to connect to, so the Wi-Fi
+    /// is left as it is.
+    NothingToJoin,
+    /// A Sherd network is in range, but this device is deliberately letting
+    /// the other device join first (see [`JOIN_GRACE`]).
+    Waiting,
+    /// Should be on one of these Sherd networks (best first); `problem`
+    /// says why, in plain English.
+    Join { candidates: Vec<String>, problem: String },
+    /// Connected to a network in a loop and must leave it.
+    LeaveLoop(String),
+}
+
+/// Result of [`SherdService::check`]: what, if anything, needs fixing.
+#[derive(Debug, Clone)]
+pub struct Health {
+    pub can_host: bool,
+    /// Plain-English descriptions, e.g. "The hotspot was renamed to \"X\"".
+    /// Empty when everything is as it should be.
+    pub problems: Vec<String>,
+}
 
 /// Everything that can go wrong bringing a [`SherdService`] up: setting up
 /// this device's persistent identity, or opening its local message store.
@@ -79,6 +127,16 @@ pub struct SherdService {
     /// The internet connection we last warned the user about sharing, so
     /// the warning is shown once per connection rather than every cycle.
     warned_sharing: Mutex<Option<String>>,
+    /// When each currently-visible Sherd network was first seen. Used for
+    /// [`JOIN_GRACE`].
+    first_seen: Mutex<HashMap<String, Instant>>,
+    /// Held for the whole of every hotspot on/off operation, so they take
+    /// turns. Without it, closing the daemon while the watchdog was part
+    /// way through restarting the hotspot (to undo a rename, say -- which
+    /// takes Windows ~10 seconds) sent "off" while "on" was still in
+    /// flight, and "on" won: the hotspot was left running after exit (seen
+    /// live).
+    hotspot_op: tokio::sync::Mutex<()>,
     shutting_down: AtomicBool,
 }
 
@@ -112,6 +170,8 @@ impl SherdService {
             links: Mutex::new(LinkSnapshot::default()),
             downstream: Mutex::new(HashMap::new()),
             warned_sharing: Mutex::new(None),
+            first_seen: Mutex::new(HashMap::new()),
+            hotspot_op: tokio::sync::Mutex::new(()),
             shutting_down: AtomicBool::new(false),
         })
     }
@@ -169,21 +229,116 @@ impl SherdService {
         }
     }
 
-    /// Whether this device is doing what it should be for the mesh, given a
-    /// fresh [`StatusReport`]: a device that can host must be hosting
-    /// (hosting is never optional -- it's what extends the mesh's range),
-    /// and one that can't must at least be connected to a Sherd network.
-    pub fn is_healthy(&self, status: &StatusReport) -> bool {
-        let up = |link: &Option<LinkStatus>| link.as_ref().filter(|l| l.state == LinkState::Up).cloned();
-        if matches!(status.capability.level, CapabilityLevel::FullMeshCapable) {
-            up(&status.hotspot).is_some()
+    /// Is this device doing everything it should for the mesh? Read-only
+    /// apart from bookkeeping; [`Self::auto_connect`] is what fixes things.
+    /// The daemon's watchdog runs this every check and only calls
+    /// `auto_connect` when something's listed here.
+    ///
+    /// What "should" means:
+    /// - A device that can host is always hosting, under Sherd's own name
+    ///   and password (someone renaming it or changing the password cuts
+    ///   every other device off, so that counts as broken too).
+    /// - Wi-Fi is switched on.
+    /// - Whenever a Sherd network is in range, the Wi-Fi is connected to the
+    ///   nearest one (see [`Self::plan_station`]) -- not to some other
+    ///   network someone picked by hand, which would leave this device
+    ///   unreachable.
+    pub async fn check(&self) -> Health {
+        let can_host = matches!(
+            self.capability().await.map(|c| c.level),
+            Ok(CapabilityLevel::FullMeshCapable)
+        );
+        let mut problems = Vec::new();
+
+        let hotspot = self.backend.hotspot.status().await.ok();
+        if can_host {
+            match &hotspot {
+                Some(h) if h.state == LinkState::Up => match self.backend.hotspot.configured().await {
+                    Some((ssid, _)) if ssid != self.config.device_ssid => {
+                        problems.push(format!("The hotspot was renamed to \"{ssid}\""))
+                    }
+                    Some((_, key)) if key != self.config.shared_key => {
+                        problems.push("The hotspot's password was changed".to_string())
+                    }
+                    _ => {}
+                },
+                Some(h) if h.state == LinkState::Starting => {} // mid-switch; look again next time
+                _ => problems.push("The hotspot is off".to_string()),
+            }
+        }
+
+        if self.backend.station.is_radio_on().await == Some(false) {
+            problems.push("Wi-Fi is turned off".to_string());
         } else {
-            up(&status.station).and_then(|s| s.ssid).is_some_and(|ssid| self.is_sherd_network(&ssid))
+            let station = self.backend.station.status().await.ok();
+            self.remember_links(hotspot.as_ref(), station.as_ref());
+            let current = station.filter(|s| s.state == LinkState::Up).and_then(|s| s.ssid);
+            let scan = self.scan().await;
+            match self.plan_station(current.as_deref(), &scan) {
+                StationPlan::Join { problem, .. } => problems.push(problem),
+                StationPlan::LeaveLoop(ssid) => {
+                    problems.push(format!("This device and \"{ssid}\" are connected to each other in a loop"))
+                }
+                StationPlan::NothingToJoin
+                    if !can_host && !current.as_deref().is_some_and(|s| self.is_sherd_network(s)) =>
+                {
+                    problems.push("No Sherd network is in range yet".to_string())
+                }
+                StationPlan::Stay(_) | StationPlan::NothingToJoin | StationPlan::Waiting => {}
+            }
+        }
+
+        Health { can_host, problems }
+    }
+
+    async fn scan(&self) -> Vec<ScanResult> {
+        match timeout(SCAN_TIMEOUT, self.backend.station.scan()).await {
+            Ok(Ok(results)) => results,
+            Ok(Err(e)) => {
+                tracing::debug!("Wi-Fi scan failed: {}", e.reason());
+                Vec::new()
+            }
+            Err(_) => {
+                tracing::debug!("Wi-Fi scan timed out");
+                Vec::new()
+            }
         }
     }
 
+    /// See [`plan_station`]. Supplies it with this device's settings and
+    /// its memory of the network, and updates when each Sherd network was
+    /// first seen.
+    fn plan_station(&self, current: Option<&str>, scan: &[ScanResult]) -> StationPlan {
+        let downstream = self.downstream_ssids();
+        let first_seen: HashMap<String, Instant> = {
+            let mut first_seen = self.first_seen.lock().expect("first-seen lock poisoned");
+            let visible: HashSet<&str> =
+                scan.iter().map(|r| r.ssid.as_str()).filter(|s| self.is_sherd_network(s)).collect();
+            first_seen.retain(|ssid, _| visible.contains(ssid.as_str()));
+            let now = Instant::now();
+            for ssid in visible {
+                first_seen.entry(ssid.to_string()).or_insert(now);
+            }
+            first_seen.clone()
+        };
+        plan_station(
+            &self.config.network_prefix,
+            &self.config.device_ssid,
+            current,
+            scan,
+            &downstream,
+            &first_seen,
+        )
+    }
+
     pub async fn hotspot_start(&self, ssid: &str, key: &str) -> platform::PlatformResult<()> {
-        self.backend.hotspot.start(ssid, key).await?;
+        {
+            let _turn = self.hotspot_op.lock().await;
+            if self.is_shutting_down() {
+                return Err(platform::PlatformError::CommandFailed("Sherd is shutting down".to_string()));
+            }
+            self.backend.hotspot.start(ssid, key).await?;
+        }
         if let Ok(status) = self.backend.hotspot.status().await {
             self.publish(Event::HotspotStatus(status));
         }
@@ -191,7 +346,10 @@ impl SherdService {
     }
 
     pub async fn hotspot_stop(&self) -> platform::PlatformResult<()> {
-        self.backend.hotspot.stop().await?;
+        {
+            let _turn = self.hotspot_op.lock().await;
+            self.backend.hotspot.stop().await?;
+        }
         if let Ok(status) = self.backend.hotspot.status().await {
             self.publish(Event::HotspotStatus(status));
         }
@@ -214,26 +372,24 @@ impl SherdService {
         Ok(())
     }
 
-    /// The one flow most users need. Run on startup, and by the daemon's
-    /// watchdog whenever [`Self::is_healthy`] says something's down.
+    /// Make this device do everything [`Self::check`] expects: Wi-Fi on,
+    /// connected to the nearest Sherd network when one's in range, and --
+    /// on a device that can host -- the hotspot on under Sherd's own name
+    /// and password. Safe to call any time: anything already right is left
+    /// alone. Run on startup, by the watchdog whenever `check` finds a
+    /// problem, and by `sherd auto`.
     ///
     /// **On a device that can host, hosting is never optional**: a Sherd
     /// mesh's range comes from having a hotspot running at every node that
-    /// can run one. So this always (re)starts this device's hotspot.
+    /// can run one.
     ///
-    /// It also joins a Sherd network as an uplink first -- turning this
-    /// device into a repeater that extends that network's range -- but
-    /// **only if the device isn't already connected to something**. An
-    /// existing connection (the user's home Wi-Fi, or a Sherd network it
-    /// already joined) is never dropped: kicking someone off their own
-    /// Wi-Fi without asking would be hostile, and hopping between Sherd
-    /// networks would just cause churn. The join happens *before* hosting so
-    /// the hotspot has a connection to share (Windows' Mobile Hotspot shares
-    /// an existing connection; it can't conjure one).
-    ///
-    /// A device that can't host has no other way to be part of the mesh, so
-    /// it does leave a non-Sherd network to join a Sherd one when one is in
-    /// range -- and says so in the log.
+    /// **The daemon is in charge of the Wi-Fi.** If someone connects it to a
+    /// different network by hand, or disconnects it, or switches Wi-Fi off,
+    /// that's put back: otherwise the device silently drops out of the mesh
+    /// and becomes unreachable. The Wi-Fi is only left alone when there's no
+    /// Sherd network in range to connect to. The station side is sorted out
+    /// *before* hosting, so the hotspot has a connection to share (Windows'
+    /// Mobile Hotspot shares an existing connection; it can't conjure one).
     pub async fn auto_connect(&self) -> AutoOutcome {
         if self.is_shutting_down() {
             return AutoOutcome::Unavailable { reason: "sherd is shutting down".to_string() };
@@ -247,20 +403,63 @@ impl SherdService {
                 });
             }
         };
+        let can_host = matches!(capability.level, CapabilityLevel::FullMeshCapable);
+
+        if self.backend.station.is_radio_on().await == Some(false) {
+            match self.backend.station.turn_radio_on().await {
+                Ok(()) => {
+                    tracing::info!("Wi-Fi was turned off -- turned it back on.");
+                    tokio::time::sleep(RADIO_WARMUP).await;
+                }
+                Err(e) => {
+                    return self.finish_auto(AutoOutcome::Unavailable {
+                        reason: format!("Wi-Fi is turned off and couldn't be turned back on: {}", e.reason()),
+                    });
+                }
+            }
+        }
 
         let station = self.backend.station.status().await.ok();
         let connected_to = station.filter(|s| s.state == LinkState::Up).and_then(|s| s.ssid);
+        let scan = self.scan().await;
 
-        if !matches!(capability.level, CapabilityLevel::FullMeshCapable) {
-            if let Some(ssid) = connected_to.as_ref().filter(|s| self.is_sherd_network(s)) {
-                self.set_links(None, Some(ssid.clone()));
-                return self.finish_auto(AutoOutcome::Joined { ssid: ssid.clone() });
+        let mut waiting = false;
+        let uplink = match self.plan_station(connected_to.as_deref(), &scan) {
+            StationPlan::Stay(ssid) => Some(ssid),
+            StationPlan::NothingToJoin => None,
+            StationPlan::Waiting => {
+                waiting = true;
+                None
             }
-            return match self.join_uplink(connected_to.as_deref()).await {
-                Some(ssid) => {
-                    self.set_links(None, Some(ssid.clone()));
-                    self.finish_auto(AutoOutcome::Joined { ssid })
+            StationPlan::LeaveLoop(ssid) => {
+                tracing::warn!(
+                    "This device and \"{ssid}\" were connected to each other in a loop -- disconnecting from \
+                     \"{ssid}\" to break it."
+                );
+                if let Err(e) = self.station_disconnect().await {
+                    tracing::warn!("Couldn't disconnect from \"{ssid}\": {}", e.reason());
                 }
+                None
+            }
+            StationPlan::Join { candidates, .. } => self
+                .join_first_working(&candidates)
+                .await
+                .or_else(|| connected_to.clone().filter(|s| self.is_sherd_network(s))),
+        };
+        // What the Wi-Fi is on now, Sherd network or not.
+        let connected_now = uplink.clone().or_else(|| {
+            connected_to.clone().filter(|s| !self.is_sherd_network(s))
+        });
+
+        if !can_host {
+            self.set_links(None, connected_now);
+            return match uplink {
+                Some(ssid) => self.finish_auto(AutoOutcome::Joined { ssid }),
+                None if waiting => self.finish_auto(AutoOutcome::Unavailable {
+                    reason: "a Sherd network is in range; waiting a few seconds so this device and its \
+                             owner don't try to join each other at the same time"
+                        .to_string(),
+                }),
                 None => self.finish_auto(AutoOutcome::Unavailable {
                     reason: "this device's Wi-Fi can only join networks, not host one, and no Sherd \
                              network is in range yet"
@@ -268,11 +467,7 @@ impl SherdService {
                 }),
             };
         }
-
-        let uplink = match &connected_to {
-            Some(ssid) => Some(ssid.clone()).filter(|s| self.is_sherd_network(s)),
-            None => self.join_uplink(None).await,
-        };
+        let connected_to = connected_now;
 
         let ssid = self.config.device_ssid.clone();
         let failure = match timeout(HOTSPOT_START_TIMEOUT, self.hotspot_start(&ssid, &self.config.shared_key)).await {
@@ -305,67 +500,19 @@ impl SherdService {
         }
     }
 
-    /// Best-effort: try every visible Sherd network, strongest signal
-    /// first, and join the first one that actually comes up -- a single
-    /// candidate failing (gone by the time we connect, rejected us, etc.)
-    /// shouldn't stop us from trying the next one. Returns the SSID joined.
-    ///
-    /// Never joins this device's own hotspot, nor one hosted by a device
-    /// that is itself connected through *this* device (see
-    /// [`DOWNSTREAM_MEMORY`]) -- either would be a loop: traffic going round
-    /// in a circle, with no route to anywhere else. `leaving` is the
-    /// non-Sherd network the device is currently on, if any, so the user is
-    /// told before it's dropped.
-    async fn join_uplink(&self, leaving: Option<&str>) -> Option<String> {
-        let scan = match timeout(SCAN_TIMEOUT, self.backend.station.scan()).await {
-            Ok(Ok(results)) => results,
-            Ok(Err(e)) => {
-                tracing::debug!("Wi-Fi scan failed: {}", e.reason());
-                Vec::new()
-            }
-            Err(_) => {
-                tracing::debug!("Wi-Fi scan timed out");
-                Vec::new()
-            }
-        };
-
-        let downstream = self.downstream_ssids();
-        let mut candidates: Vec<_> = scan
-            .iter()
-            .filter(|r| self.is_sherd_network(&r.ssid) && r.ssid != self.config.device_ssid)
-            .filter(|r| {
-                let is_loop = downstream.contains(&r.ssid);
-                if is_loop {
-                    tracing::debug!(
-                        "Not joining \"{}\": it's run by a device connected through this one, so it would be a loop.",
-                        r.ssid
-                    );
+    /// Try each network in order (best first) and stop at the first one
+    /// that actually comes up -- one failing (gone by the time we connect,
+    /// rejected us, etc.) shouldn't stop us from trying the next.
+    async fn join_first_working(&self, candidates: &[String]) -> Option<String> {
+        for ssid in candidates {
+            match timeout(JOIN_TIMEOUT, self.station_connect(ssid, &self.config.shared_key)).await {
+                Ok(Ok(())) if self.wait_for_station_up(ssid).await => {
+                    tracing::info!("Joined the Sherd network \"{ssid}\".");
+                    return Some(ssid.clone());
                 }
-                !is_loop
-            })
-            .collect();
-        candidates.sort_by_key(|r| std::cmp::Reverse(r.signal_percent.unwrap_or(0)));
-
-        if let (Some(leaving), Some(first)) = (leaving, candidates.first()) {
-            tracing::warn!(
-                "Disconnecting from \"{leaving}\" to join the Sherd network \"{}\": this device can't \
-                 host a hotspot, so joining one is the only way for it to be part of the mesh.",
-                first.ssid
-            );
-        }
-
-        for candidate in candidates {
-            match timeout(JOIN_TIMEOUT, self.station_connect(&candidate.ssid, &self.config.shared_key)).await {
-                Ok(Ok(())) if self.wait_for_station_up(&candidate.ssid).await => {
-                    tracing::info!("Joined the Sherd network \"{}\".", candidate.ssid);
-                    return Some(candidate.ssid.clone());
-                }
-                Ok(Ok(())) => tracing::warn!(
-                    "Tried to join \"{}\" but the connection never came up; trying the next one.",
-                    candidate.ssid
-                ),
-                Ok(Err(e)) => tracing::warn!("Couldn't join \"{}\": {}.", candidate.ssid, e.reason()),
-                Err(_) => tracing::warn!("Joining \"{}\" timed out.", candidate.ssid),
+                Ok(Ok(())) => tracing::warn!("Tried to join \"{ssid}\", but the connection never came up."),
+                Ok(Err(e)) => tracing::warn!("Couldn't join \"{ssid}\": {}.", e.reason()),
+                Err(_) => tracing::warn!("Joining \"{ssid}\" timed out."),
             }
         }
         None
@@ -436,31 +583,31 @@ impl SherdService {
     }
 
     /// Turn this device's hotspot off (and put the user's own hotspot
-    /// settings back) as the daemon exits. Only touches the hotspot if it's
-    /// Sherd's -- if someone switched it to their own settings meanwhile,
-    /// it's theirs now and is left alone. Also stops the watchdog from
+    /// settings back) as the daemon exits. Also stops the watchdog from
     /// turning it straight back on.
-    pub async fn shutdown(&self) {
+    ///
+    /// Asks Windows to stop *first*, with no status check beforehand:
+    /// closing the window leaves only ~5 seconds before Windows kills the
+    /// process, and switching the hotspot off itself can take that long.
+    /// Once asked, Windows finishes the job even if this process is gone
+    /// (seen live: still "switching" as the daemon exited, off moments
+    /// later), so `grace` running out isn't a failure.
+    pub async fn shutdown(&self, grace: Duration) {
         self.shutting_down.store(true, Ordering::SeqCst);
 
-        let status = self.backend.hotspot.status().await.ok();
-        let was_on = status.as_ref().is_some_and(|s| s.state == LinkState::Up);
-        let is_ours = status
-            .as_ref()
-            .and_then(|s| s.ssid.as_deref())
-            .map_or(true, |ssid| ssid == self.config.device_ssid);
-
-        if was_on && !is_ours {
-            tracing::info!("Leaving the hotspot on: it's been switched to settings that aren't Sherd's.");
-            return;
-        }
-        match self.backend.hotspot.stop().await {
-            Ok(()) if was_on => tracing::info!("Hotspot turned off."),
-            Ok(()) => {}
-            Err(e) => tracing::warn!(
+        // Waits out any hotspot operation already in progress (no new one
+        // can start once `shutting_down` is set), then turns it off.
+        let stop = async {
+            let _turn = self.hotspot_op.lock().await;
+            self.backend.hotspot.stop().await
+        };
+        match timeout(grace, stop).await {
+            Ok(Ok(())) => tracing::info!("Hotspot turned off."),
+            Ok(Err(e)) => tracing::warn!(
                 "Couldn't turn the hotspot off ({}). Turn it off in Settings > Network & internet > Mobile hotspot.",
                 e.reason()
             ),
+            Err(_) => tracing::info!("Hotspot is turning off (Windows finishes that in the background)."),
         }
     }
 
@@ -611,12 +758,15 @@ impl SherdService {
     }
 
     /// Record a peer as reachable, announcing it (log + event) only the
-    /// first time it's seen rather than on every beacon.
-    fn note_peer(&self, device_id: String, display_name: String, addr: SocketAddr) {
-        if self.peers.upsert(device_id.clone(), display_name.clone(), addr) {
+    /// first time it's seen rather than on every beacon. Returns whether it
+    /// was new.
+    fn note_peer(&self, device_id: String, display_name: String, addr: SocketAddr) -> bool {
+        let is_new = self.peers.upsert(device_id.clone(), display_name.clone(), addr);
+        if is_new {
             tracing::info!("{display_name} ({}) is now reachable.", short_id(&device_id));
             self.publish(Event::PeerJoined { device_id, display_name });
         }
+        is_new
     }
 
     /// Runs this device's contribution to messaging for as long as the
@@ -654,18 +804,21 @@ impl SherdService {
                 let mut ticker = tokio::time::interval(mailbox::DISCOVERY_INTERVAL);
                 loop {
                     ticker.tick().await;
-                    let links = this.links.lock().expect("links lock poisoned").clone();
-                    let announce = mailbox::Announce {
-                        device_id: this.identity.device_id().to_string(),
-                        display_name: this.identity.display_name().to_string(),
-                        mailbox_port: mailbox::MAILBOX_PORT,
-                        hosting_ssid: links.hosting,
-                        uplink_ssid: links.uplink,
-                    };
-                    if let Ok(payload) = serde_json::to_vec(&announce) {
-                        let dest: SocketAddr = (std::net::Ipv4Addr::BROADCAST, mailbox::DISCOVERY_PORT).into();
-                        if let Err(e) = socket.send_to(&payload, dest).await {
-                            tracing::debug!("discovery broadcast failed: {e}");
+                    if let Ok(payload) = serde_json::to_vec(&this.current_announce()) {
+                        // Announce on every network this device is on. A
+                        // plain 255.255.255.255 broadcast only goes out one
+                        // of them: a PC that hosts a hotspot while also on
+                        // home Wi-Fi would announce itself on the home
+                        // network only, so devices on its own hotspot never
+                        // heard of it (they couldn't find it in `peers`,
+                        // or send to it).
+                        let mut targets = this.backend.interfaces.ipv4_broadcast_addresses().await;
+                        targets.push(std::net::Ipv4Addr::BROADCAST);
+                        for target in targets {
+                            let dest = SocketAddr::from((target, mailbox::DISCOVERY_PORT));
+                            if let Err(e) = socket.send_to(&payload, dest).await {
+                                tracing::debug!("discovery broadcast to {dest} failed: {e}");
+                            }
                         }
                     }
                     for gone in this.peers.prune_stale(mailbox::PEER_STALE_AFTER) {
@@ -702,7 +855,25 @@ impl SherdService {
             }
 
             let addr = SocketAddr::new(from.ip(), announce.mailbox_port);
-            self.note_peer(announce.device_id, announce.display_name, addr);
+            if self.note_peer(announce.device_id, announce.display_name, addr) {
+                // Answer a newly-seen device directly, so it learns about
+                // this one straight away -- even if this device's own
+                // broadcasts aren't reaching it for some reason.
+                if let Ok(payload) = serde_json::to_vec(&self.current_announce()) {
+                    let _ = socket.send_to(&payload, SocketAddr::new(from.ip(), mailbox::DISCOVERY_PORT)).await;
+                }
+            }
+        }
+    }
+
+    fn current_announce(&self) -> mailbox::Announce {
+        let links = self.links.lock().expect("links lock poisoned").clone();
+        mailbox::Announce {
+            device_id: self.identity.device_id().to_string(),
+            display_name: self.identity.display_name().to_string(),
+            mailbox_port: mailbox::MAILBOX_PORT,
+            hosting_ssid: links.hosting,
+            uplink_ssid: links.uplink,
         }
     }
 
@@ -815,6 +986,91 @@ impl SherdService {
     }
 }
 
+/// The owner-ID part of a Sherd hotspot name (`Sherd-1B13A2` -> `1B13A2`);
+/// every device's hotspot name is built from its ID.
+fn owner_tag<'a>(prefix: &str, ssid: &'a str) -> Option<&'a str> {
+    ssid.strip_prefix(prefix)?.strip_prefix('-')
+}
+
+/// Tie-break between this device and the owner of `ssid`, used to stop two
+/// devices joining each other at once: the device with the higher ID is the
+/// one that joins. True if this device should go ahead and join that
+/// network straight away.
+fn joins_first(prefix: &str, own_ssid: &str, ssid: &str) -> bool {
+    match (owner_tag(prefix, ssid), owner_tag(prefix, own_ssid)) {
+        (Some(theirs), Some(mine)) => mine > theirs,
+        _ => true,
+    }
+}
+
+/// Decide what the Wi-Fi should be connected to, given what it's on now
+/// (`current`) and what's in range (`scan`). The rule is "always be on the
+/// nearest Sherd network", with three refinements:
+/// - Never this device's own hotspot (`own_ssid`), nor one run by a device
+///   that's connected through this one (`downstream` -- a loop, see
+///   [`DOWNSTREAM_MEMORY`]).
+/// - Don't hop between Sherd networks for small signal differences
+///   ([`ROAM_MARGIN`]).
+/// - When two devices first see each other, the lower-ID one waits
+///   ([`JOIN_GRACE`], measured from `first_seen`) so they don't join each
+///   other at the same moment.
+fn plan_station(
+    prefix: &str,
+    own_ssid: &str,
+    current: Option<&str>,
+    scan: &[ScanResult],
+    downstream: &HashSet<String>,
+    first_seen: &HashMap<String, Instant>,
+) -> StationPlan {
+    let is_sherd = |ssid: &str| ssid.starts_with(prefix);
+    let mut candidates: Vec<&ScanResult> = scan
+        .iter()
+        .filter(|r| is_sherd(&r.ssid) && r.ssid != own_ssid && !downstream.contains(&r.ssid))
+        .collect();
+    candidates.sort_by_key(|r| std::cmp::Reverse(r.signal_percent.unwrap_or(0)));
+    let may_join = |ssid: &str| {
+        joins_first(prefix, own_ssid, ssid)
+            || first_seen.get(ssid).is_some_and(|seen| seen.elapsed() >= JOIN_GRACE)
+    };
+
+    if let Some(current) = current.filter(|s| is_sherd(s)) {
+        if downstream.contains(current) && !joins_first(prefix, own_ssid, current) {
+            return StationPlan::LeaveLoop(current.to_string());
+        }
+        let current_signal = scan.iter().find(|r| r.ssid == current).and_then(|r| r.signal_percent);
+        if let (Some(best), Some(current_signal)) = (candidates.first(), current_signal) {
+            let best_signal = best.signal_percent.unwrap_or(0);
+            if best.ssid != current
+                && best_signal >= current_signal.saturating_add(ROAM_MARGIN)
+                && may_join(&best.ssid)
+            {
+                return StationPlan::Join {
+                    candidates: vec![best.ssid.clone()],
+                    problem: format!(
+                        "A much closer Sherd network is in range (\"{}\" at {best_signal}% signal, vs \
+                         {current_signal}% for \"{current}\")",
+                        best.ssid
+                    ),
+                };
+            }
+        }
+        return StationPlan::Stay(current.to_string());
+    }
+
+    if candidates.is_empty() {
+        return StationPlan::NothingToJoin;
+    }
+    let allowed: Vec<String> = candidates.iter().filter(|r| may_join(&r.ssid)).map(|r| r.ssid.clone()).collect();
+    if allowed.is_empty() {
+        return StationPlan::Waiting;
+    }
+    let problem = match current {
+        Some(other) => format!("Wi-Fi is connected to \"{other}\" instead of a Sherd network"),
+        None => "Wi-Fi isn't connected, but a Sherd network is in range".to_string(),
+    };
+    StationPlan::Join { candidates: allowed, problem }
+}
+
 fn now_unix() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
@@ -860,6 +1116,91 @@ mod tests {
         assert_eq!(format_size(512), "512 bytes");
         assert_eq!(format_size(1536), "1.5 KB");
         assert_eq!(format_size(5 * 1024 * 1024), "5.0 MB");
+    }
+
+    // ---- plan_station -------------------------------------------------
+    // This device is "Sherd-500000": higher ID than "Sherd-100000", lower
+    // than "Sherd-900000".
+
+    const ME: &str = "Sherd-500000";
+
+    fn net(ssid: &str, signal: u8) -> ScanResult {
+        ScanResult { ssid: ssid.to_string(), signal_percent: Some(signal) }
+    }
+
+    fn plan(current: Option<&str>, scan: &[ScanResult], downstream: &[&str], seen_long_ago: &[&str]) -> StationPlan {
+        let downstream = downstream.iter().map(|s| s.to_string()).collect();
+        let long_ago = Instant::now() - JOIN_GRACE - Duration::from_secs(1);
+        let first_seen = scan
+            .iter()
+            .map(|r| {
+                let when = if seen_long_ago.contains(&r.ssid.as_str()) { long_ago } else { Instant::now() };
+                (r.ssid.clone(), when)
+            })
+            .collect();
+        plan_station("Sherd", ME, current, scan, &downstream, &first_seen)
+    }
+
+    #[test]
+    fn leaves_a_hand_picked_network_for_the_nearest_sherd_one() {
+        let scan = [net("Home", 90), net("Sherd-100000", 40), net("Sherd-200000", 70)];
+        match plan(Some("Home"), &scan, &[], &[]) {
+            StationPlan::Join { candidates, problem } => {
+                assert_eq!(candidates, ["Sherd-200000", "Sherd-100000"]); // strongest first
+                assert!(problem.contains("\"Home\""));
+            }
+            other => panic!("expected Join, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn leaves_wifi_alone_when_no_sherd_network_is_in_range() {
+        let scan = [net("Home", 90), net(ME, 99)]; // own hotspot doesn't count
+        assert!(matches!(plan(Some("Home"), &scan, &[], &[]), StationPlan::NothingToJoin));
+    }
+
+    #[test]
+    fn never_joins_a_network_that_is_connected_through_this_device() {
+        let scan = [net("Sherd-100000", 90)];
+        assert!(matches!(plan(None, &scan, &["Sherd-100000"], &[]), StationPlan::NothingToJoin));
+    }
+
+    #[test]
+    fn lower_id_device_gives_the_other_a_head_start() {
+        let scan = [net("Sherd-900000", 80)];
+        assert!(matches!(plan(None, &scan, &[], &[]), StationPlan::Waiting));
+        // ...but joins once the head start has run out and it still isn't
+        // connected through us.
+        assert!(matches!(plan(None, &scan, &[], &["Sherd-900000"]), StationPlan::Join { .. }));
+    }
+
+    #[test]
+    fn higher_id_device_joins_straight_away() {
+        let scan = [net("Sherd-100000", 80)];
+        assert!(matches!(plan(None, &scan, &[], &[]), StationPlan::Join { .. }));
+    }
+
+    #[test]
+    fn only_roams_for_a_much_stronger_network() {
+        let small_gain = [net("Sherd-100000", 50), net("Sherd-200000", 60)];
+        assert!(matches!(plan(Some("Sherd-100000"), &small_gain, &[], &[]), StationPlan::Stay(_)));
+
+        let big_gain = [net("Sherd-100000", 30), net("Sherd-200000", 80)];
+        match plan(Some("Sherd-100000"), &big_gain, &[], &[]) {
+            StationPlan::Join { candidates, .. } => assert_eq!(candidates, ["Sherd-200000"]),
+            other => panic!("expected Join, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn breaks_a_loop_from_the_lower_id_side_only() {
+        // We're on 900000's hotspot while it's on ours: we're the lower ID,
+        // so we're the one to leave.
+        let scan = [net("Sherd-900000", 80)];
+        assert!(matches!(plan(Some("Sherd-900000"), &scan, &["Sherd-900000"], &[]), StationPlan::LeaveLoop(_)));
+        // Same loop seen from the higher-ID side: stay; the other one leaves.
+        let scan = [net("Sherd-100000", 80)];
+        assert!(matches!(plan(Some("Sherd-100000"), &scan, &["Sherd-100000"], &[]), StationPlan::Stay(_)));
     }
 
     #[test]

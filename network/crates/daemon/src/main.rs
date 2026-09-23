@@ -12,7 +12,6 @@ use engine::{SherdConfig, SherdService};
 use interprocess::local_socket::{tokio::prelude::*, GenericNamespaced, ListenerOptions};
 #[cfg(windows)]
 use interprocess::os::windows::local_socket::ListenerOptionsExt;
-use platform::CapabilityLevel;
 use protocol::AutoOutcome;
 
 /// Longest the watchdog waits between attempts while something keeps
@@ -66,12 +65,7 @@ async fn run() -> anyhow::Result<()> {
     };
 
     tracing::info!("Stopping Sherd ({reason})...");
-    if tokio::time::timeout(SHUTDOWN_GRACE, service.shutdown()).await.is_err() {
-        tracing::warn!(
-            "Timed out turning the hotspot off; it may still be on. Turn it off in Settings > \
-             Network & internet > Mobile hotspot."
-        );
-    }
+    service.shutdown(SHUTDOWN_GRACE).await;
     tracing::info!("Sherd stopped.");
     Ok(())
 }
@@ -180,83 +174,77 @@ fn warn_if_not_elevated() {
 
 /// Keeps this device's part of the mesh up for as long as the daemon runs.
 ///
-/// Checks every `interval` whether things are as they should be (see
-/// `SherdService::is_healthy`: hosting on a device that can host, connected
-/// to a Sherd network on one that can't) and runs `auto_connect` when not.
-/// This is also what turns the hotspot back on if someone switches it off
-/// in Windows Settings: it's noticed within one interval and restarted.
+/// Every `interval`, asks `SherdService::check` whether everything is as it
+/// should be: the hotspot on, with Sherd's own name and password; Wi-Fi on;
+/// and Wi-Fi connected to the nearest Sherd network whenever one is in
+/// range. If anything's off -- including someone switching the hotspot off,
+/// renaming it, or connecting the Wi-Fi to another network by hand -- it's
+/// logged and `auto_connect` puts it right.
 ///
-/// While something keeps failing, retries back off (doubling, up to
-/// [`MAX_RETRY_DELAY`]), and the same error is logged once, not on every
-/// retry. A new error, or recovery, is always logged.
+/// While something keeps failing, checks back off (doubling, up to
+/// [`MAX_RETRY_DELAY`]), and the same problem or result is logged once, not
+/// on every retry.
 async fn supervise(service: Arc<SherdService>, interval: Duration) {
     let mut first_check = true;
-    let mut failed_attempts: u32 = 0;
-    let mut last_problem: Option<String> = None;
+    let mut unhealthy_checks: u32 = 0;
+    let mut last_problems: Option<String> = None;
+    let mut last_outcome: Option<String> = None;
 
     loop {
         if service.is_shutting_down() {
             return;
         }
 
-        let status = service.status().await;
-        let can_host = matches!(status.capability.level, CapabilityLevel::FullMeshCapable);
-
-        if service.is_healthy(&status) {
-            if failed_attempts > 0 {
-                tracing::info!("{}", if can_host { "The hotspot is back on." } else { "Reconnected to the mesh." });
+        let health = service.check().await;
+        if health.problems.is_empty() {
+            if unhealthy_checks >= 2 {
+                tracing::info!("Everything is back to normal.");
             } else if first_check {
-                tracing::info!("{}", if can_host { "The hotspot is already on." } else { "Already connected to the mesh." });
+                tracing::info!("Everything is already set up.");
             }
             first_check = false;
-            failed_attempts = 0;
-            last_problem = None;
+            unhealthy_checks = 0;
+            last_problems = None;
+            last_outcome = None;
             tokio::time::sleep(interval).await;
             continue;
         }
 
-        if first_check {
-            tracing::info!("Connecting to the mesh...");
-        } else if failed_attempts == 0 {
-            tracing::warn!(
-                "{}",
-                if can_host {
-                    "The hotspot went off -- turning it back on."
-                } else {
-                    "Lost the connection to the Sherd network -- looking for another one."
-                }
-            );
+        let problems = health.problems.join(". ");
+        let new_problem = last_problems.as_deref() != Some(problems.as_str());
+        if new_problem {
+            if first_check {
+                tracing::info!("{problems} -- setting things up.");
+            } else {
+                tracing::warn!("{problems} -- fixing it.");
+            }
         }
         first_check = false;
+        last_problems = Some(problems);
 
         let outcome = service.auto_connect().await;
         if service.is_shutting_down() {
             return;
         }
 
-        let succeeded = match &outcome {
-            AutoOutcome::Hosting { .. } => true,
-            AutoOutcome::Joined { .. } => !can_host,
-            AutoOutcome::Unavailable { .. } => false,
-        };
+        unhealthy_checks += 1;
+        let delay = retry_delay(interval, unhealthy_checks);
         let report = outcome.to_string();
-
-        if succeeded {
-            tracing::info!("{report}");
-            failed_attempts = 0;
-            last_problem = None;
-            tokio::time::sleep(interval).await;
-        } else {
-            failed_attempts += 1;
-            let delay = retry_delay(interval, failed_attempts);
-            if last_problem.as_deref() != Some(report.as_str()) {
-                tracing::warn!("{report} Will keep trying in the background (next try in {}).", describe_delay(delay));
-            } else {
-                tracing::debug!("still failing: {report}");
+        // Always say how a newly-reported problem turned out, even if the
+        // result reads the same as last time ("Hotspot ... is on." after
+        // fixing a rename, say) -- otherwise "fixing it" is left hanging.
+        if new_problem || last_outcome.as_deref() != Some(report.as_str()) {
+            match &outcome {
+                AutoOutcome::Unavailable { .. } => tracing::warn!(
+                    "{report} Will keep trying in the background (next try in {}).",
+                    describe_delay(delay)
+                ),
+                AutoOutcome::Joined { .. } if health.can_host => tracing::warn!("{report}"),
+                _ => tracing::info!("{report}"),
             }
-            last_problem = Some(report);
-            tokio::time::sleep(delay).await;
         }
+        last_outcome = Some(report);
+        tokio::time::sleep(delay).await;
     }
 }
 

@@ -44,51 +44,67 @@ They talk to each other over a local connection on the same machine
    (`Sherd-` plus the first 6 characters of the ID, e.g. `Sherd-1B13A2`), so
    the hotspot keeps the same name across restarts.
 2. **Hosting a hotspot — always, if the device can.** If this device's
-   Wi-Fi can host a hotspot, the daemon **always** turns it on. Every device
-   that can host does, which is what lets the network's range reach further
-   with each device instead of depending on just one.
-3. **Joining a Sherd network.** If the device isn't connected to any Wi-Fi
-   network, the daemon also joins a nearby `Sherd-...` network (strongest
-   signal first, trying the next one if one fails). The device then acts as
-   a *repeater*: it's connected to someone else's hotspot and runs its own,
-   extending that network further. What it will **not** do:
-   * **It won't kick you off your own Wi-Fi.** If a device that can host is
-     already connected to a network (your home Wi-Fi, say), that connection
-     is left alone and the hotspot shares it. The only exception is a device
-     whose Wi-Fi *can't* host: joining a Sherd network is its only way into
-     the mesh, so it will switch over when one is in range, and the log says
-     so when it does.
-   * **It won't create loops.** Devices tell each other which hotspot they
-     run and which network they're connected to. So if PC B is connected to
-     PC A's hotspot, PC A will never connect "back" into PC B's hotspot.
-     That would be a circle with no route anywhere else.
-4. **Staying on — automatically.** The daemon checks about every 15
-   seconds. If the hotspot goes off for any reason (including someone
-   switching it off in Windows Settings), it's turned back on at the next
-   check. If a device that can't host loses its Sherd network, it looks
-   for another. If something keeps failing (say, Windows refuses to host),
-   the daemon waits a bit longer between tries — up to 5 minutes — and
-   logs the problem once, rather than repeating the same error every 15
-   seconds.
-5. **Your internet is shared — you'll be told.** Windows' hotspot works by
+   Wi-Fi can host a hotspot, the daemon **always** turns it on, under its
+   own name and Sherd's password. Every device that can host does, which is
+   what lets the network's range reach further with each device instead of
+   depending on just one.
+3. **The daemon is in charge of the Wi-Fi.** Whenever a `Sherd-...` network
+   is in range, the Wi-Fi stays connected to the nearest one (strongest
+   signal; if joining one fails, the next is tried). A device connected to
+   someone else's hotspot while running its own acts as a *repeater*,
+   extending that network further. If anyone connects the Wi-Fi to a
+   different network by hand, disconnects it, or turns Wi-Fi off, the
+   daemon puts it back at its next check. Otherwise the device would
+   silently drop out of the mesh and become unreachable. Two things to know:
+   * **This includes your home Wi-Fi.** While a Sherd network is in range,
+     the PC is moved off whatever network it was on. **To use the Wi-Fi
+     normally, close the daemon.** Only when no Sherd network is in range is
+     the Wi-Fi left as it is.
+   * **It only switches for a clearly better signal.** It moves to a
+     different Sherd network only if that one is much stronger (30+ points
+     of signal). Every switch briefly cuts off anything connected through
+     this device, so it doesn't hop back and forth between networks of
+     similar strength.
+4. **No loops.** Devices tell each other which hotspot they run and which
+   network they're connected to, so if PC B is connected to PC A's hotspot,
+   PC A never connects "back" into PC B's. That would be a circle with no
+   route anywhere else. And when two devices first come into range, both
+   would try to join the other at the same moment. So the one with the
+   higher ID joins first, and the other waits 45 seconds, by which time
+   it knows the first is connected through it.
+5. **Staying on — automatically.** The daemon checks about every 15
+   seconds, and puts right anything that's wrong:
+   * The hotspot was switched off (e.g. in Windows Settings): turned back on.
+   * The hotspot was **renamed, or its password changed**: changed back
+     (other devices look for its Sherd name and use Sherd's password, so
+     either change would cut them off). This briefly restarts the hotspot.
+   * Wi-Fi was turned off, disconnected, or moved to another network:
+     turned back on and reconnected, as above.
+
+   If something keeps failing (say, Windows refuses to host), the daemon
+   waits longer between tries — up to 5 minutes — and logs the problem once
+   rather than every 15 seconds.
+6. **Your internet is shared — you'll be told.** Windows' hotspot works by
    sharing an existing internet connection. If that's your own (home Wi-Fi,
    Ethernet), the daemon prints a clear warning the first time, and `sherd
    status` shows it too, because anyone nearby running Sherd can use it
    (every Sherd install currently uses the same built-in password). Close
    the daemon to stop sharing.
-6. **Closing the daemon turns the hotspot off**, and puts your own Mobile
-   Hotspot name and password back the way they were. (Versions from before
-   this change didn't do that. If Settings > Mobile hotspot still shows a
-   `Sherd-...` name, rename it there once.)
-7. **Finding other devices.** Once on the same Wi-Fi network, every device
-   announces itself every few seconds ("I'm here, my name is ..., my ID
-   is ..."). Every device keeps a live list of who's currently reachable,
-   and the daemon logs when a device appears or disappears.
-8. **Sending things.** To send a text or a file to another device, you
+7. **Closing the daemon turns the hotspot off** (Windows takes up to about
+   20 seconds to finish), and puts your own Mobile Hotspot name and
+   password back the way they were. (Versions from before this change
+   didn't do that. If Settings > Mobile hotspot still shows a `Sherd-...`
+   name, rename it there once, with the daemon closed.)
+8. **Finding other devices.** Every device announces itself every few
+   seconds ("I'm here, my name is ..., my ID is ...") on *every* network
+   it's on — including its own hotspot — and answers newcomers directly.
+   Every device keeps a live list of who's currently reachable, and the
+   daemon logs when a device appears or disappears.
+9. **Sending things.** To send a text or a file to another device, you
    address it by its ID (or just the first few characters of it — see
    `sherd peers` below). The daemon opens a direct connection to that
    device and sends it.
-9. **Receiving things.** The daemon starts listening for incoming
+10. **Receiving things.** The daemon starts listening for incoming
    messages/files the moment it starts — this needs nothing from you, and
    nobody has to be watching. Every message and file that arrives is saved
    straight away: text goes into a small local database
@@ -197,8 +213,10 @@ for example:
 21:05:15  WARN Heads up: this hotspot is sharing this PC's internet connection ("MyHomeWiFi") with every device that joins the mesh ...
 21:05:40  INFO OFFICE-PC (9f0c2e71) is now reachable.
 21:06:02  INFO Message from OFFICE-PC (9f0c2e71): hello!
-21:07:30  WARN The hotspot went off -- turning it back on.
-21:07:33  INFO Hotspot "Sherd-1B13A2" is on.
+21:07:30  WARN The hotspot was renamed to "My Hotspot" -- fixing it.
+21:07:41  INFO Hotspot "Sherd-1B13A2" is on.
+21:09:02  WARN Wi-Fi is connected to "MyHomeWiFi" instead of a Sherd network -- fixing it.
+21:09:08  INFO Joined the Sherd network "Sherd-9F0C2E".
 ```
 
 (For more detail when troubleshooting, set `RUST_LOG=debug` before starting
@@ -237,12 +255,11 @@ sherd status     # what this device is doing right now
    another PC" above).
 2. Run `daemon.exe` as Administrator on both. Give it a few seconds.
 3. On either machine: `sherd status`. You should see `Hotspot: on` on
-   whichever device(s) can host, and `Wi-Fi: connected to the Sherd
-   network "Sherd-..."` on a device that joined another's hotspot.
-   (Remember: a device that's already on your home Wi-Fi stays on it, so
-   for two devices to see each other they need to be on the *same*
-   network. Either both on the same home Wi-Fi, or one connected to the
-   other's `Sherd-...` hotspot.)
+   whichever device(s) can host. Within about a minute, one of the two
+   also shows `Wi-Fi: connected to the Sherd network "Sherd-..."`: it has
+   joined the other's hotspot. It's the one with the higher ID; the other
+   waits so they don't join each other at once. The one that joined leaves
+   whatever Wi-Fi it was on before.
 4. `sherd peers` on either machine should list the other within a few
    seconds of them being on the same network. Each daemon's window also
    logs "... is now reachable".
@@ -260,6 +277,18 @@ sherd status     # what this device is doing right now
 * Loop prevention covers direct loops (A connected to B's hotspot while B
   is connected to A's). Longer circles through three or more devices
   aren't detected yet.
+* **Messages only reach devices one hop away.** Each hotspot is its own
+  small network. A device reaches the hotspot it's connected to, and
+  devices connected to its own hotspot, but not devices two or more
+  hotspots away. Nothing forwards messages onward yet.
+* If you close the daemon in the few seconds while it's restarting the
+  hotspot (e.g. just after undoing a rename), Windows may not finish
+  turning the hotspot off before the window disappears. Turn it off in
+  Settings if so.
+* The Wi-Fi control, the Wi-Fi-radio switch-on, and joining the nearest
+  network are tested in isolation, and the hotspot-rename fix and
+  shutdown are tested live on one PC. None of them have been tested
+  between two real PCs yet.
 * Some PCs report they can host, then Windows refuses when asked (seen as
   `Unspecified error (0x80004005)`). The daemon now explains what to check.
   If Mobile hotspot won't turn on by hand in Windows Settings either, that

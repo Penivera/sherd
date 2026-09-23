@@ -63,6 +63,20 @@ impl HotspotController for WinRtHotspotController {
         run_blocking(status_blocking).await
     }
 
+    async fn configured(&self) -> Option<(String, String)> {
+        run_blocking(|| {
+            let _apartment = RoApartment::enter()?;
+            let config = current_manager()?
+                .GetCurrentAccessPointConfiguration()
+                .map_err(|e| PlatformError::CommandFailed(e.message()))?;
+            let ssid = config.Ssid().map_err(|e| PlatformError::CommandFailed(e.message()))?;
+            let key = config.Passphrase().map_err(|e| PlatformError::CommandFailed(e.message()))?;
+            Ok((ssid.to_string(), key.to_string()))
+        })
+        .await
+        .ok()
+    }
+
     async fn upstream_name(&self) -> Option<String> {
         run_blocking(|| {
             let _apartment = RoApartment::enter()?;
@@ -79,7 +93,7 @@ impl HotspotController for WinRtHotspotController {
     }
 }
 
-async fn run_blocking<T, F>(f: F) -> PlatformResult<T>
+pub(crate) async fn run_blocking<T, F>(f: F) -> PlatformResult<T>
 where
     F: FnOnce() -> PlatformResult<T> + Send + 'static,
     T: Send + 'static,
@@ -95,10 +109,10 @@ where
 /// used rather than single-threaded so no message pump is required; calling
 /// `RoInitialize` again on an already-initialized thread is explicitly
 /// supported (it just bumps a ref count), so reusing pooled threads is fine.
-struct RoApartment;
+pub(crate) struct RoApartment;
 
 impl RoApartment {
-    fn enter() -> PlatformResult<Self> {
+    pub(crate) fn enter() -> PlatformResult<Self> {
         unsafe { RoInitialize(RO_INIT_MULTITHREADED) }
             .map_err(|e| PlatformError::CommandFailed(format!("RoInitialize failed: {e}")))?;
         Ok(Self)
@@ -153,14 +167,27 @@ fn start_blocking(ssid: &str, key: &str, original: &Mutex<Option<SavedSettings>>
         ))
     })?;
     let current_ssid = config.Ssid().map(|s| s.to_string()).unwrap_or_default();
+    let current_key = config.Passphrase().map(|p| p.to_string()).unwrap_or_default();
+    let settings_match = current_ssid == ssid && current_key == key;
+    let is_on = manager.TetheringOperationalState().ok() == Some(TetheringOperationalState::On);
 
     // Already hosting exactly what we want: nothing to do. Avoids
     // bouncing a working hotspot (and kicking off every connected device)
     // just because `start` was called again.
-    if current_ssid == ssid
-        && manager.TetheringOperationalState().ok() == Some(TetheringOperationalState::On)
-    {
+    if is_on && settings_match {
         return Ok(());
+    }
+
+    // On, but someone renamed it or changed its password (in Windows
+    // Settings, say). New settings only take effect when the hotspot
+    // starts, so it has to go off and back on -- asking Windows to "start"
+    // a running hotspot just answers "already on" and keeps the wrong name.
+    if is_on {
+        let result = manager
+            .StopTetheringAsync()
+            .and_then(|op| op.join())
+            .map_err(|e| PlatformError::CommandFailed(format!("Windows couldn't restart the hotspot: {}", e.message())))?;
+        check_result(result, "stop")?;
     }
 
     {
@@ -171,10 +198,7 @@ fn start_blocking(ssid: &str, key: &str, original: &Mutex<Option<SavedSettings>>
         // network whenever the user later turns it on for themselves.
         let mut saved = original.lock().expect("saved-settings lock poisoned");
         if saved.is_none() && current_ssid != ssid && !current_ssid.starts_with("Sherd-") {
-            *saved = Some(SavedSettings {
-                ssid: current_ssid,
-                passphrase: config.Passphrase().map(|p| p.to_string()).unwrap_or_default(),
-            });
+            *saved = Some(SavedSettings { ssid: current_ssid, passphrase: current_key });
         }
     }
 
