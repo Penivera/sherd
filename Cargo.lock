@@ -1077,6 +1077,8 @@ dependencies = [
  "anyhow",
  "clap",
  "interprocess",
+ "platform",
+ "platform-windows",
  "protocol",
  "tokio",
  "tracing",
@@ -1555,8 +1557,10 @@ name = "daemon"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "engine",
  "interprocess",
+ "nu-ansi-term",
  "platform",
  "platform-linux",
  "platform-windows",

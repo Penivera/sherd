@@ -17,3 +17,7 @@ tracing-subscriber.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 interprocess.workspace = true
+platform.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+platform-windows.workspace = true

@@ -121,11 +121,44 @@ pub enum AutoOutcome {
     Unavailable { reason: String },
 }
 
+/// Plain-English summary, used by the daemon's log and the CLI alike so
+/// both describe the same outcome the same way.
+impl std::fmt::Display for AutoOutcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AutoOutcome::Hosting { ssid, uplink: None } => write!(f, "Hotspot \"{ssid}\" is on."),
+            AutoOutcome::Hosting { ssid, uplink: Some(uplink) } => write!(
+                f,
+                "Hotspot \"{ssid}\" is on, and connected onward to the Sherd network \"{uplink}\" (extending its range)."
+            ),
+            AutoOutcome::Joined { ssid } => write!(f, "Connected to the Sherd network \"{ssid}\"."),
+            AutoOutcome::Unavailable { reason } => write!(f, "Not connected to the mesh: {reason}"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StatusReport {
     pub capability: CapabilityReport,
     pub hotspot: Option<LinkStatus>,
     pub station: Option<LinkStatus>,
+    // Everything below was added after the first release of this struct;
+    // `#[serde(default)]` keeps older clients (e.g. `desktop`'s copy of
+    // these types) able to read a newer daemon's status and vice versa.
+    #[serde(default)]
+    pub device_name: String,
+    #[serde(default)]
+    pub device_id: String,
+    /// The hotspot name this device uses when hosting.
+    #[serde(default)]
+    pub hotspot_name: String,
+    /// When hosting: the connection whose internet the hotspot is sharing
+    /// onward (e.g. the home Wi-Fi this PC is on), if it isn't itself a
+    /// Sherd network.
+    #[serde(default)]
+    pub sharing_internet_from: Option<String>,
+    #[serde(default)]
+    pub peer_count: usize,
 }
 
 /// Something the daemon pushes to clients without being asked — a link or
@@ -140,6 +173,10 @@ pub enum Event {
     /// own startup attempt), so a client that wasn't the one asking still
     /// learns the outcome.
     AutoResult(AutoOutcome),
+    /// Another sherd device just became reachable on this network.
+    PeerJoined { device_id: String, display_name: String },
+    /// A previously reachable device hasn't been heard from in a while.
+    PeerLeft { device_id: String, display_name: String },
     /// A text message and/or file arrived from another sherd device.
     MessageReceived {
         from_device_id: String,

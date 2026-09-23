@@ -52,6 +52,16 @@ pub struct Announce {
     pub device_id: String,
     pub display_name: String,
     pub mailbox_port: u16,
+    /// The Sherd hotspot this device is running right now, if any.
+    #[serde(default)]
+    pub hosting_ssid: Option<String>,
+    /// The network this device is connected to as a client right now, if
+    /// any. Together with `hosting_ssid`, this is what lets a device avoid
+    /// connecting "backwards" into its own clients' hotspots (a loop): if
+    /// a peer's `uplink_ssid` is *my* hotspot, then that peer's
+    /// `hosting_ssid` is downstream of me and must never become my uplink.
+    #[serde(default)]
+    pub uplink_ssid: Option<String>,
 }
 
 /// One message on the mailbox (TCP) channel.
@@ -148,12 +158,17 @@ impl PeerRegistry {
         Self::default()
     }
 
-    pub fn upsert(&self, device_id: String, display_name: String, addr: SocketAddr) {
+    /// Record (or refresh) a peer. Returns `true` if it wasn't already
+    /// known -- i.e. it just became reachable -- so callers can announce
+    /// that once rather than on every 5-second beacon.
+    pub fn upsert(&self, device_id: String, display_name: String, addr: SocketAddr) -> bool {
         let mut peers = self.peers.lock().expect("peer registry lock poisoned");
-        peers.insert(
-            device_id.clone(),
-            PeerRecord { device_id, display_name, addr, last_seen_unix: now_unix() },
-        );
+        peers
+            .insert(
+                device_id.clone(),
+                PeerRecord { device_id, display_name, addr, last_seen_unix: now_unix() },
+            )
+            .is_none()
     }
 
     pub fn get(&self, device_id: &str) -> Option<PeerRecord> {
@@ -184,10 +199,17 @@ impl PeerRegistry {
     }
 
     /// Drop peers not heard from in `max_age` -- they're presumably no
-    /// longer on the network.
-    pub fn prune_stale(&self, max_age: Duration) {
+    /// longer on the network. Returns the ones dropped.
+    pub fn prune_stale(&self, max_age: Duration) -> Vec<PeerRecord> {
         let cutoff = now_unix() - max_age.as_secs() as i64;
-        self.peers.lock().expect("peer registry lock poisoned").retain(|_, p| p.last_seen_unix >= cutoff);
+        let mut peers = self.peers.lock().expect("peer registry lock poisoned");
+        let stale: Vec<String> =
+            peers.values().filter(|p| p.last_seen_unix < cutoff).map(|p| p.device_id.clone()).collect();
+        stale.iter().filter_map(|id| peers.remove(id)).collect()
+    }
+
+    pub fn len(&self) -> usize {
+        self.peers.lock().expect("peer registry lock poisoned").len()
     }
 }
 

@@ -48,7 +48,7 @@ pub struct CompositeHotspotController {
 
 impl CompositeHotspotController {
     pub fn new() -> Self {
-        Self { winrt: WinRtHotspotController, netsh: NetshHotspotController }
+        Self { winrt: WinRtHotspotController::new(), netsh: NetshHotspotController }
     }
 }
 
@@ -60,7 +60,16 @@ impl HotspotController for CompositeHotspotController {
                 tracing::debug!(
                     "Mobile Hotspot unavailable ({reason}); trying legacy hostednetwork"
                 );
-                self.netsh.start(ssid, key).await
+                // If the fallback fails too, report the Mobile Hotspot
+                // reason: it's the mechanism that works on nearly all
+                // modern PCs, so its error is the one worth acting on.
+                // The legacy path's own error ("the group or resource is
+                // not in the correct state...") is near-universal on
+                // modern adapters and would only bury it.
+                self.netsh.start(ssid, key).await.map_err(|netsh_err| {
+                    tracing::debug!("legacy hostednetwork also failed: {netsh_err}");
+                    PlatformError::Unsupported(reason)
+                })
             }
             other => other,
         }
@@ -78,5 +87,9 @@ impl HotspotController for CompositeHotspotController {
             Err(PlatformError::Unsupported(_)) => self.netsh.status().await,
             other => other,
         }
+    }
+
+    async fn upstream_name(&self) -> Option<String> {
+        self.winrt.upstream_name().await
     }
 }

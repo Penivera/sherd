@@ -18,10 +18,12 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 anyhow.workspace = true
 interprocess.workspace = true
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 [target.'cfg(windows)'.dependencies]
 platform-windows.workspace = true
 widestring.workspace = true
+nu-ansi-term = "0.50"
 
 [target.'cfg(not(windows))'.dependencies]
 platform-linux.workspace = true

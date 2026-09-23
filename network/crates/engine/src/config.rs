@@ -19,8 +19,11 @@ pub struct SherdConfig {
     /// Shared Wi-Fi passphrase used both to host and to join. See the
     /// limitation above.
     pub shared_key: String,
-    /// This device's own hotspot SSID, used only if no existing sherd
-    /// network is found and this device can host one.
+    /// This device's own hotspot SSID. The default here is a random
+    /// placeholder; `SherdService::new` replaces it with one derived from
+    /// the device's permanent identity (e.g. `Sherd-1B13A2`), so the
+    /// hotspot keeps the same name across restarts and other devices'
+    /// saved Wi-Fi profiles for it keep working.
     pub device_ssid: String,
     /// How often the daemon's background watchdog checks that a link
     /// (station or hotspot) is still up, retrying `auto_connect` if neither

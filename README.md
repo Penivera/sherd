@@ -35,30 +35,60 @@ They talk to each other over a local connection on the same machine
 
 ### How it works
 
-1. **Getting on the same network.** When the daemon starts, it looks for a
-   nearby Wi-Fi network named `Sherd-...`. If it finds one, it joins it. If
-   this device's Wi-Fi adapter is capable of it, it **also always turns on
-   its own hotspot** (also named `Sherd-...`) at the same time, regardless
-   of whether it found another network to join — every device that's
-   capable of hosting does, so the network's range extends outward through
-   every device rather than depending on just one. This is checked
-   continuously (about every 15 seconds): if a hotspot or connection drops
-   for any reason, it's automatically restarted/rejoined without you having
-   to do anything.
-2. **Getting an identity.** The very first time it runs, the daemon
+1. **Getting an identity.** The very first time it runs, the daemon
    generates a permanent ID for this device (a cryptographic key, saved to
    `%APPDATA%\sherd\identity.key` on Windows) and picks a display name (your
    computer's name, by default). This ID stays the same every time you
    restart the daemon — it's how other devices recognize "this is the same
-   device as before."
-3. **Finding other devices.** Once on the same Wi-Fi network, every device
-   announces itself a few times a minute ("I'm here, my name is ..., my ID
-   is ..."). Every device keeps a live list of who's currently reachable.
-4. **Sending things.** To send a text or a file to another device, you
+   device as before." The device's hotspot name comes from it too
+   (`Sherd-` plus the first 6 characters of the ID, e.g. `Sherd-1B13A2`), so
+   the hotspot keeps the same name across restarts.
+2. **Hosting a hotspot — always, if the device can.** If this device's
+   Wi-Fi can host a hotspot, the daemon **always** turns it on. Every device
+   that can host does, which is what lets the network's range reach further
+   with each device instead of depending on just one.
+3. **Joining a Sherd network.** If the device isn't connected to any Wi-Fi
+   network, the daemon also joins a nearby `Sherd-...` network (strongest
+   signal first, trying the next one if one fails). The device then acts as
+   a *repeater*: it's connected to someone else's hotspot and runs its own,
+   extending that network further. What it will **not** do:
+   * **It won't kick you off your own Wi-Fi.** If a device that can host is
+     already connected to a network (your home Wi-Fi, say), that connection
+     is left alone and the hotspot shares it. The only exception is a device
+     whose Wi-Fi *can't* host: joining a Sherd network is its only way into
+     the mesh, so it will switch over when one is in range, and the log says
+     so when it does.
+   * **It won't create loops.** Devices tell each other which hotspot they
+     run and which network they're connected to. So if PC B is connected to
+     PC A's hotspot, PC A will never connect "back" into PC B's hotspot.
+     That would be a circle with no route anywhere else.
+4. **Staying on — automatically.** The daemon checks about every 15
+   seconds. If the hotspot goes off for any reason (including someone
+   switching it off in Windows Settings), it's turned back on at the next
+   check. If a device that can't host loses its Sherd network, it looks
+   for another. If something keeps failing (say, Windows refuses to host),
+   the daemon waits a bit longer between tries — up to 5 minutes — and
+   logs the problem once, rather than repeating the same error every 15
+   seconds.
+5. **Your internet is shared — you'll be told.** Windows' hotspot works by
+   sharing an existing internet connection. If that's your own (home Wi-Fi,
+   Ethernet), the daemon prints a clear warning the first time, and `sherd
+   status` shows it too, because anyone nearby running Sherd can use it
+   (every Sherd install currently uses the same built-in password). Close
+   the daemon to stop sharing.
+6. **Closing the daemon turns the hotspot off**, and puts your own Mobile
+   Hotspot name and password back the way they were. (Versions from before
+   this change didn't do that. If Settings > Mobile hotspot still shows a
+   `Sherd-...` name, rename it there once.)
+7. **Finding other devices.** Once on the same Wi-Fi network, every device
+   announces itself every few seconds ("I'm here, my name is ..., my ID
+   is ..."). Every device keeps a live list of who's currently reachable,
+   and the daemon logs when a device appears or disappears.
+8. **Sending things.** To send a text or a file to another device, you
    address it by its ID (or just the first few characters of it — see
    `sherd peers` below). The daemon opens a direct connection to that
    device and sends it.
-5. **Receiving things.** The daemon starts listening for incoming
+9. **Receiving things.** The daemon starts listening for incoming
    messages/files the moment it starts — this needs nothing from you, and
    nobody has to be watching. Every message and file that arrives is saved
    straight away: text goes into a small local database
@@ -68,18 +98,23 @@ They talk to each other over a local connection on the same machine
    window that prints messages the moment they arrive, for *watching* it
    happen live. Nothing is lost if that window isn't open; you just won't
    see it happen in real time, and would check `sherd history` instead.
+   Every received message and file is also written to the daemon's own
+   window, as it arrives.
 
 ### What has to stay running, and what doesn't
 
 This trips people up, so to be explicit:
 
 * **`daemon.exe` has to keep running, full stop.** It's the thing doing the
-  hosting, joining, listening, and saving — if you close its window,
-  *all* of that stops: no hotspot, no receiving, nothing, until you start
-  it again. You can minimize its window; you just can't close it. There's
-  no background-service or system-tray version yet (a natural next step,
-  not built this pass) — for now, "running the daemon" means an open
-  (if minimized) console window, or a terminal tab left alone.
+  hosting, joining, listening, and saving. If you close its window (or
+  press Ctrl+C in it), it turns the hotspot off and stops, and *all* of
+  that stops with it: no hotspot, no receiving, nothing, until you start it
+  again. You can minimize its window; you just can't close it. There's no
+  background-service or system-tray version yet (a natural next step, not
+  built yet). For now, "running the daemon" means an open (if minimized)
+  console window. (If it's killed some other way, like End task in Task
+  Manager, it can't clean up, so the hotspot stays on until you turn it off
+  in Settings.)
 * **`sherd.exe` (the CLI) does *not* need to stay open**, with one
   exception. `sherd status`, `sherd send`, `sherd peers`, etc. each run,
   print their answer, and exit immediately — there's nothing to leave
@@ -92,9 +127,9 @@ This trips people up, so to be explicit:
 ### Prerequisites
 
 * Rust toolchain (1.80+) — only needed if you're building from source.
-* **Run the daemon as Administrator on Windows.** Hosting a Wi-Fi hotspot
-  needs elevated permissions; without it, hosting will fail (joining an
-  existing network still works fine unelevated).
+* **Run the daemon as Administrator on Windows.** Turning the hotspot on
+  and switching Wi-Fi networks can fail without it. The daemon checks, and
+  says so at startup if it isn't elevated.
 * The first time the daemon receives a connection from another device,
   **Windows Firewall will likely prompt you to allow it** on private/public
   networks — click Allow, or messaging/discovery from other devices won't
@@ -106,8 +141,23 @@ This trips people up, so to be explicit:
 cargo build --release -p daemon -p cli
 ```
 
-This produces `target/release/daemon.exe` and `target/release/sherd.exe`
-(the CLI is named `sherd`, not `cli`, so it doesn't collide with anything).
+Run it from the repository's root folder. This produces
+`target/release/daemon.exe` and `target/release/sherd.exe` (the CLI is named
+`sherd`, not `cli`, so it doesn't collide with anything).
+
+> **Old builds:** there may be an old `network/target/release/` folder with
+> a `sherd-daemon.exe` in it. That's from before the project was
+> reorganized and is out of date. Don't run or copy anything from there.
+> The current programs are `daemon.exe` and `sherd.exe` in
+> `target/release/`, at the root.
+
+### Updating to a new version
+
+Close the old daemon's window first (on every PC), then start the new
+`daemon.exe`. Only one copy can run at a time. If an old one is still
+running, the new one says so and exits. If `sherd` says the daemon "is an
+older version that doesn't know this command", an old daemon is still
+running.
 
 ### Copying it to another PC
 
@@ -136,45 +186,66 @@ daemon.exe
 
 As soon as it starts, it's already joining/hosting and listening for
 incoming messages on its own — there's nothing further to run just to
-"turn on" receiving.
+"turn on" receiving. Its window shows, in plain sentences, what it's doing,
+for example:
+
+```
+21:05:12  INFO Sherd is running on this device as "HIS-THINKPAD" (ID 1b13a2c4).
+21:05:12  INFO Its hotspot is called "Sherd-1B13A2". Keep this window open (minimizing is fine) -- closing it turns the hotspot off and stops Sherd.
+21:05:12  INFO Connecting to the mesh...
+21:05:15  INFO Hotspot "Sherd-1B13A2" is on.
+21:05:15  WARN Heads up: this hotspot is sharing this PC's internet connection ("MyHomeWiFi") with every device that joins the mesh ...
+21:05:40  INFO OFFICE-PC (9f0c2e71) is now reachable.
+21:06:02  INFO Message from OFFICE-PC (9f0c2e71): hello!
+21:07:30  WARN The hotspot went off -- turning it back on.
+21:07:33  INFO Hotspot "Sherd-1B13A2" is on.
+```
+
+(For more detail when troubleshooting, set `RUST_LOG=debug` before starting
+it.)
 
 Then, whenever you want to check on it or do something, open a *separate*
-terminal (or just double-click, for the no-argument default) and use the
-CLI — each of these runs, prints its answer, and exits, without needing the
-daemon's own window touched:
+terminal and use the CLI. Each command runs, prints its answer, and exits,
+without needing the daemon's own window touched. Double-clicking
+`sherd.exe` shows the status and keeps its window open until you press
+Enter:
 
 ```bash
-sherd            # same as `sherd auto`: join a nearby network, or host one
-sherd status      # what's this device doing right now
+sherd            # same as `sherd status`
+sherd status     # what this device is doing right now
 ```
 
 ### Command reference
 
 | Command | What it does |
 |---|---|
-| `sherd` / `sherd auto` | Join a nearby sherd network, or host one if none is found. Runs automatically on daemon startup, too. |
-| `sherd status` | Capability + hotspot + station link state. |
-| `sherd capability` | Just the Wi-Fi capability check (can this device host?). |
-| `sherd hotspot start --ssid <name> --key <pass>` / `sherd hotspot stop` | Manually control this device's own hotspot. |
+| `sherd` / `sherd status` | What this device is doing: its name/ID, hotspot on/off, which Wi-Fi it's on, whether it's sharing your internet, and how many devices are in reach. |
+| `sherd auto` | Re-run "join / turn the hotspot on" right now, instead of waiting for the daemon's next check. Rarely needed. |
+| `sherd capability` | Can this device's Wi-Fi host a hotspot, or only join networks? |
+| `sherd hotspot start --ssid <name> --key <pass>` / `sherd hotspot stop` | Manually control this device's own hotspot. (The daemon turns it back on at its next check. To keep it off, close the daemon.) |
 | `sherd station connect --ssid <name> --key <pass>` / `sherd station disconnect` | Manually join/leave a network as a client. |
 | `sherd whoami` | This device's permanent ID and display name. |
 | `sherd peers` | Other sherd devices reachable right now. |
 | `sherd send <id> <text...>` | Send a text message. `<id>` can be the short prefix `peers` shows. |
 | `sherd send-file <id> <path>` | Send a file. |
 | `sherd history <id>` | Past messages/files exchanged with a device (works even if it's offline right now, and even if `sherd listen` was never running when they arrived). |
-| `sherd listen` | *Optional.* Leave this running only if you want to watch messages/files appear live in a terminal. Not needed for them to actually be received and saved — the daemon does that regardless. Ctrl+C to stop. |
+| `sherd listen` | *Optional.* Leave this running only if you want to watch messages/files (and devices coming and going) live in a terminal. Not needed for them to actually be received and saved — the daemon does that regardless, and shows them in its own window too. Ctrl+C to stop. |
 
 ### Trying it between two devices
 
 1. Copy `daemon.exe` and `sherd.exe` to both machines (see "Copying it to
    another PC" above).
 2. Run `daemon.exe` as Administrator on both. Give it a few seconds.
-3. On either machine: `sherd status` — you should see a hotspot come up
-   (`Hotspot: Up`) on whichever device(s) are capable, and the other
-   device's `sherd status` should show `Station: Up` if it joined instead.
-4. `sherd peers` on either machine should list the other once they're both
-   on the same Wi-Fi network and a few seconds have passed for the
-   discovery broadcast.
+3. On either machine: `sherd status`. You should see `Hotspot: on` on
+   whichever device(s) can host, and `Wi-Fi: connected to the Sherd
+   network "Sherd-..."` on a device that joined another's hotspot.
+   (Remember: a device that's already on your home Wi-Fi stays on it, so
+   for two devices to see each other they need to be on the *same*
+   network. Either both on the same home Wi-Fi, or one connected to the
+   other's `Sherd-...` hotspot.)
+4. `sherd peers` on either machine should list the other within a few
+   seconds of them being on the same network. Each daemon's window also
+   logs "... is now reachable".
 5. `sherd send <the-other-device's-short-id> hello!` — it arrives instantly
    on the other machine whether or not anyone's watching there. Check it
    with `sherd history <your-short-id>`, or start `sherd listen` on that
@@ -184,8 +255,15 @@ sherd status      # what's this device doing right now
 
 * **No background-service/tray version yet** — `daemon.exe`'s window has to
   stay open (minimized is fine) on both machines for any of this to keep
-  working. Closing it stops hosting, joining, and receiving until it's
-  started again.
+  working. Closing it turns the hotspot off and stops joining and
+  receiving until it's started again.
+* Loop prevention covers direct loops (A connected to B's hotspot while B
+  is connected to A's). Longer circles through three or more devices
+  aren't detected yet.
+* Some PCs report they can host, then Windows refuses when asked (seen as
+  `Unspecified error (0x80004005)`). The daemon now explains what to check.
+  If Mobile hotspot won't turn on by hand in Windows Settings either, that
+  PC can't host, but it still joins other devices' hotspots.
 * You can only message a device that's currently reachable (shown in
   `sherd peers`) — there's no "deliver later" queue yet.
 * Files are sent whole, in memory — fine for everyday files, not built for

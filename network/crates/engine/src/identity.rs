@@ -36,20 +36,24 @@ impl DeviceIdentity {
                 let seed: [u8; 32] = bytes.try_into().expect("length checked above");
                 SigningKey::from_bytes(&seed)
             }
-            Ok(bytes) => {
+            Ok(_) => {
                 tracing::warn!(
-                    path = %path.display(),
-                    len = bytes.len(),
-                    "identity file is the wrong size; generating a new identity"
+                    "This device's identity file ({}) was damaged, so a new identity was created. \
+                     Other devices will see this one as a new contact.",
+                    path.display()
                 );
                 Self::generate_and_save(path)?
             }
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                tracing::info!(path = %path.display(), "no identity file yet; generating one");
+                tracing::info!("First run: created a permanent identity for this device ({}).", path.display());
                 Self::generate_and_save(path)?
             }
             Err(e) => {
-                tracing::warn!(path = %path.display(), "could not read identity file ({e}); generating a new identity");
+                tracing::warn!(
+                    "Couldn't read this device's identity file ({}: {e}), so a new identity was created. \
+                     Other devices will see this one as a new contact.",
+                    path.display()
+                );
                 Self::generate_and_save(path)?
             }
         };
@@ -92,6 +96,13 @@ impl DeviceIdentity {
         let signature = Signature::from_bytes(signature);
         verifying_key.verify(message, &signature).is_ok()
     }
+}
+
+/// The first 8 characters of a `device_id` -- enough to tell devices apart
+/// at a glance, and accepted anywhere a full ID is (see
+/// `mailbox::PeerRegistry::resolve`). Full IDs are 64 characters.
+pub fn short_id(device_id: &str) -> &str {
+    &device_id[..device_id.len().min(8)]
 }
 
 /// Where this device's identity lives by default: a `sherd` folder under the

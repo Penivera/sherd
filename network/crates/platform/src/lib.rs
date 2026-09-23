@@ -116,8 +116,33 @@ pub trait WifiCapabilityChecker: Send + Sync {
 #[async_trait]
 pub trait HotspotController: Send + Sync {
     async fn start(&self, ssid: &str, key: &str) -> PlatformResult<()>;
+    /// Turn the hotspot off. Implementations that changed the OS's own
+    /// hotspot settings in `start` (name/password) should put the user's
+    /// original settings back here, so running sherd doesn't permanently
+    /// rename someone's Mobile Hotspot. Calling this when the hotspot is
+    /// already off is not an error.
     async fn stop(&self) -> PlatformResult<()>;
     async fn status(&self) -> PlatformResult<LinkStatus>;
+    /// Name of the connection the hotspot is sharing onward (the Wi-Fi
+    /// network or Ethernet connection this device gets its own internet
+    /// from), when the backend can tell. Used to warn the user that their
+    /// internet is being shared with the mesh.
+    async fn upstream_name(&self) -> Option<String> {
+        None
+    }
+}
+
+impl PlatformError {
+    /// The underlying reason, without the category prefix `Display` adds
+    /// ("operation failed: ...") -- for building human-facing sentences
+    /// where that prefix just reads as noise.
+    pub fn reason(&self) -> String {
+        match self {
+            PlatformError::NotImplemented => "not implemented on this platform yet".to_string(),
+            PlatformError::Unsupported(r) | PlatformError::CommandFailed(r) => r.clone(),
+            PlatformError::Io(e) => e.to_string(),
+        }
+    }
 }
 
 /// One network seen in a scan, before deciding whether to join it.

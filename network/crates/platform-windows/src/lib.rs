@@ -49,3 +49,43 @@ pub fn backend() -> PlatformBackend {
         interfaces: Box::new(WlanApiInterfaceEnumerator),
     }
 }
+
+/// Whether this program has its console window to itself -- i.e. it was
+/// started by double-clicking it, rather than typed into an existing
+/// terminal. Such a window closes the instant the program exits, so
+/// anything it printed last (an error, or a command's answer) vanishes
+/// before anyone can read it; callers use this to pause first.
+pub fn owns_console_window() -> bool {
+    use windows::Win32::System::Console::GetConsoleProcessList;
+    let mut pids = [0u32; 2];
+    unsafe { GetConsoleProcessList(&mut pids) == 1 }
+}
+
+/// Whether this process is running elevated ("Run as administrator").
+/// Hosting and changing Wi-Fi connections can fail without it, and the
+/// resulting Windows errors rarely say "you need admin" -- so the daemon
+/// checks up front and says so plainly instead.
+pub fn is_elevated() -> bool {
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
+    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    unsafe {
+        let mut token = HANDLE::default();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).is_err() {
+            return false;
+        }
+        let mut elevation = TOKEN_ELEVATION::default();
+        let mut returned = 0u32;
+        let ok = GetTokenInformation(
+            token,
+            TokenElevation,
+            Some(&mut elevation as *mut TOKEN_ELEVATION as *mut core::ffi::c_void),
+            std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+            &mut returned,
+        )
+        .is_ok();
+        let _ = CloseHandle(token);
+        ok && elevation.TokenIsElevated != 0
+    }
+}
