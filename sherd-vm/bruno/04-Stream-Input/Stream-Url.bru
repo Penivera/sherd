@@ -1,0 +1,30 @@
+meta {
+  name: Get Stream URL
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/vm/{{sessionId}}/stream
+  body: none
+  auth: none
+}
+
+headers {
+  Authorization: Bearer {{authToken}}
+}
+
+docs {
+  Returns { url, stream_url } — signed VNC/stream URL.
+  Open in browser or pass to desktop client's vmService.getStreamUrl().
+  Treat as secret (contains signed sessionId).
+}
+
+assert {
+  res.status: eq 200
+}
+
+script:post-response {
+  if (res.body.url) console.log("stream url:", res.body.url);
+  if (res.body.stream_url) console.log("stream_url:", res.body.stream_url);
+}

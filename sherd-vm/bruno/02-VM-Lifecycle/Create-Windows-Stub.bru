@@ -1,0 +1,33 @@
+meta {
+  name: Create Windows (stub - expect 501/400)
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/vm/create
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+  Authorization: Bearer {{authToken}}
+}
+
+body:json {
+  {
+    "os": "windows",
+    "template": "default",
+    "cpu": 2,
+    "mem_mb": 4096
+  }
+}
+
+docs {
+  Windows provider is stub — should return NotImplemented
+}
+
+assert {
+  res.status: in [400, 501]
+}

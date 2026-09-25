@@ -1,0 +1,28 @@
+meta {
+  name: Exec cat uploaded file
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/vm/{{sessionId}}/exec
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+  Authorization: Bearer {{authToken}}
+}
+
+body:json {
+  {
+    "cmd": "cat",
+    "args": ["/tmp/hello.txt"]
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.stdout: contains "hello from Bruno"
+}

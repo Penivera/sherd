@@ -1,0 +1,19 @@
+meta {
+  name: Resume VM
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/vm/{{sessionId}}/resume
+  body: none
+  auth: none
+}
+
+headers {
+  Authorization: Bearer {{authToken}}
+}
+
+assert {
+  res.status: eq 200
+}
