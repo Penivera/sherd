@@ -1,0 +1,102 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The portable crates (wire, mesh, mempool) and the whole network/ layer
+  # build and test on both platforms. The `desktop` crate is excluded here
+  # because it links GPUI and native windowing/secret-service libraries; it
+  # gets its own best-effort job below.
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build (workspace, excluding desktop)
+        run: cargo build --workspace --exclude desktop --all-targets
+
+      - name: Test (workspace, excluding desktop)
+        run: cargo test --workspace --exclude desktop
+
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    # Advisory until the tree is normalized; remove continue-on-error once
+    # `cargo fmt --all` has been run and committed.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    # Advisory until existing lints are cleared; flip to a hard gate after.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo clippy --workspace --exclude desktop --all-targets -- -D warnings
+
+  # GPUI needs native X11/Wayland/xkbcommon libraries and is the most
+  # environment-sensitive crate in the workspace, so this job is best-effort:
+  # it surfaces breakage without blocking otherwise-green PRs.
+  desktop:
+    name: desktop (best-effort)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop
+
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config clang \
+            libxkbcommon-dev libxkbcommon-x11-dev \
+            libwayland-dev libx11-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev \
+            libfontconfig1-dev libssl-dev libdbus-1-dev libsecret-1-dev
+
+      - name: Build desktop
+        run: cargo build --manifest-path desktop/Cargo.toml --all-targets
+
+      - name: Test desktop
+        run: cargo test --manifest-path desktop/Cargo.toml

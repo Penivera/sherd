@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question or discussion
+    url: https://github.com/Penivera/sherd/discussions
+    about: Ask questions and discuss ideas before filing an issue.
+  - name: Security report
+    url: https://github.com/Penivera/sherd/security/advisories/new
+    about: Please report vulnerabilities privately, not as a public issue.
