@@ -5,8 +5,8 @@
 use std::path::Path;
 
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, ConnectionTrait, Database, DatabaseConnection, DbErr,
-    EntityTrait, QueryFilter, QueryOrder, Schema, Set,
+    ActiveModelTrait, ColumnTrait, Database, DatabaseConnection, DbErr,
+    EntityTrait, QueryFilter, QueryOrder, Set,
 };
 
 use crate::entity::{contact, conversation, message};
@@ -28,19 +28,7 @@ impl Storage {
     }
 
     async fn from_connection(db: DatabaseConnection) -> Result<Self, DbErr> {
-        let builder = db.get_database_backend();
-        let schema = Schema::new(builder);
-
-        let stmts = vec![
-            builder.build(schema.create_table_from_entity(crate::entity::contact::Entity).if_not_exists()),
-            builder.build(schema.create_table_from_entity(crate::entity::conversation::Entity).if_not_exists()),
-            builder.build(schema.create_table_from_entity(crate::entity::message::Entity).if_not_exists()),
-            builder.build(schema.create_table_from_entity(crate::entity::peer_link::Entity).if_not_exists()),
-        ];
-
-        for stmt in stmts {
-            db.execute(stmt).await?;
-        }
+        db.get_schema_registry("engine::entity").sync(&db).await?;
 
         Ok(Self { db })
     }

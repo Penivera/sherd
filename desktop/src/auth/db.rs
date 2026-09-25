@@ -1,6 +1,6 @@
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, ConnectionTrait, Database, DatabaseConnection, EntityTrait,
-    QueryFilter, QueryOrder, Schema, Set, Statement,
+    QueryFilter, QueryOrder, Set,
 };
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -73,15 +73,11 @@ impl AuthDb {
     }
 
     async fn init_schema(&self) -> Result<(), DbError> {
-        let backend = self.conn.get_database_backend();
-        let schema = Schema::new(backend);
-
-        self.conn.execute(Statement::from_string(backend, "PRAGMA foreign_keys = ON;")).await?;
-        self.conn.execute(backend.build(&schema.create_table_from_entity(user::Entity))).await?;
-        self.conn.execute(backend.build(&schema.create_table_from_entity(auth_identity::Entity))).await?;
-        self.conn.execute(backend.build(&schema.create_table_from_entity(solana_challenge::Entity))).await?;
-        self.conn.execute(backend.build(&schema.create_table_from_entity(oauth_exchange_code::Entity))).await?;
-        
+        self.conn.execute_unprepared("PRAGMA foreign_keys = ON;").await?;
+        self.conn
+            .get_schema_registry("desktop::auth::entity")
+            .sync(&self.conn)
+            .await?;
         Ok(())
     }
 
