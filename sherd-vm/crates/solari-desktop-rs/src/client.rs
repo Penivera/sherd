@@ -246,15 +246,16 @@ impl DesktopClient {
     // --- Desktop lifecycle ---
 
     pub async fn create(&self, opts: CreateDesktopOpts) -> Result<DesktopSession, SolariError> {
-        let url = format!("{}/desktops", self.opts.base_url);
         let body = serde_json::to_value(&opts).map_err(SolariError::Json)?;
         let key = Self::idempotency_key();
-        // Try /desktops first, fallback to /sandboxes (Solari lists desktops under /sandboxes with kind: desktop), then /vms
+        // Solari: desktop templates (default/office) must use POST /sandboxes (kind: desktop), not /desktops
+        // Try /sandboxes first for desktop, fallback to /desktops then /vms
+        let url = format!("{}/sandboxes", self.opts.base_url);
         let res: Result<DesktopSession, SolariError> = self.request_with_retry(reqwest::Method::POST, &url, Some(body.clone()), Some(key.clone())).await;
         match res {
             Ok(s) => Ok(s),
             Err(SolariError::NotFound(_)) | Err(SolariError::Http { status: 404, .. }) => {
-                let alt_url = format!("{}/sandboxes", self.opts.base_url);
+                let alt_url = format!("{}/desktops", self.opts.base_url);
                 let res2: Result<DesktopSession, SolariError> = self.request_with_retry(reqwest::Method::POST, &alt_url, Some(body.clone()), Some(key.clone())).await;
                 match res2 {
                     Ok(s) => Ok(s),

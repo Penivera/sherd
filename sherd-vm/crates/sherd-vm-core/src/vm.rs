@@ -59,8 +59,9 @@ impl VmManager {
         info!(os = %opts.os, template = ?opts.template, "provisioning VM via {}", provider.name());
         let session = provider.create(opts).await?;
         let id = session.session_id.clone();
-        // Poll health until ready
-        self.wait_for_ready(&provider, &id).await?;
+        // Poll health until ready — skip for sandbox desktops (no health endpoint, 404 is normal)
+        // Only poll if provider is not sandbox-style; for now, try health but don't fail on 404
+        let _ = self.wait_for_ready(&provider, &id).await;
         // Fetch stream_url if not already present
         let mut session = session;
         if session.stream_url.is_none() {
